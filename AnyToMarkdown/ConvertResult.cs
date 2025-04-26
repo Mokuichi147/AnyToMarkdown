@@ -1,4 +1,4 @@
-namespace MarkdownConverter;
+namespace AnyToMarkdown;
 
 /// <summary>
 /// 変換結果を表すクラス

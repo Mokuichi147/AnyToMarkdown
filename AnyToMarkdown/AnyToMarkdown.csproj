@@ -8,14 +8,14 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PackageId>MarkdownConverter</PackageId>
+    <PackageId>AnyToMarkdown</PackageId>
     <Version>0.1.0</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Authors>Mokuichi147</Authors>
     <Copyright>© 2025 Mokuichi147</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/Mokuichi147/MarkdownConverter</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/Mokuichi147/MarkdownConverter.git</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Mokuichi147/AnyToMarkdown</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Mokuichi147/AnyToMarkdown.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 

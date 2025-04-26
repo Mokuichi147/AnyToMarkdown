@@ -1,4 +1,4 @@
-﻿namespace MarkdownConverter.Tests;
+﻿namespace AnyToMarkdown.Tests;
 
 public class DocxTest
 {

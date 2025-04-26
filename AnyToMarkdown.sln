@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MarkdownConverter", "MarkdownConverter\MarkdownConverter.csproj", "{1F9B3FCF-5270-4101-817F-FB6FABCD254E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AnyToMarkdown", "AnyToMarkdown\AnyToMarkdown.csproj", "{1F9B3FCF-5270-4101-817F-FB6FABCD254E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MarkdownConverter.Tests", "MarkdownConverter.Tests\MarkdownConverter.Tests.csproj", "{BB1A1C2E-4D6B-4D09-80A4-86D438008150}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AnyToMarkdown.Tests", "AnyToMarkdown.Tests\AnyToMarkdown.Tests.csproj", "{BB1A1C2E-4D6B-4D09-80A4-86D438008150}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

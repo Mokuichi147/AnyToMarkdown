@@ -1,11 +1,11 @@
-# Markdown Converter
+# Any To Markdown
 
-ドキュメントファイルをマークダウン形式に変換します。
+任意ファイルをマークダウン形式に変換します。
 
 
 ## How to use
 ```cs
-using MarkdownConverter;
+using AnyToMarkdown;
 
 using FileStream stream = File.OpenRead("<filePath>.docx");
 ConvertResult result = DocxConverter.Convert(stream);
@@ -16,5 +16,5 @@ Console.WriteLine(result.Text);
 ## How to build
 ```shell
 dotnet pack
-ls ./MarkdownConverter/bin/Release
+ls ./AnyToMarkdown/bin/Release
 ```

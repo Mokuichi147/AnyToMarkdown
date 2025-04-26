@@ -1,4 +1,4 @@
-namespace MarkdownConverter;
+namespace AnyToMarkdown;
 
 public static class DocxConverter
 {

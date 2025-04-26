@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MarkdownConverter\MarkdownConverter.csproj" />
+    <ProjectReference Include="..\AnyToMarkdown\AnyToMarkdown.csproj" />
   </ItemGroup>
 
   <ItemGroup>
