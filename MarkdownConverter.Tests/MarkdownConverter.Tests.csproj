@@ -22,4 +22,11 @@
     <ProjectReference Include="..\MarkdownConverter\MarkdownConverter.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update=".\Resources\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+
 </Project>

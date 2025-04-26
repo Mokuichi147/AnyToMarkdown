@@ -7,4 +7,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Mammoth" Version="1.8.0" />
+    <PackageReference Include="ReverseMarkdown" Version="4.6.0" />
+  </ItemGroup>
+
 </Project>
