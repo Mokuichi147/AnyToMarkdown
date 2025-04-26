@@ -1,20 +1,6 @@
-Copyright 2025 Mokuichi147
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+This project includes third-party software components:
 
 ---
-
-This package includes third-party software components licensed under the BSD 2-Clause License:
 
 [Mammoth .docx to HTML converter for .NET](https://github.com/mwilliamson/dotnet-mammoth)
 
@@ -43,8 +29,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-This package includes third-party software components licensed under the MIT License:
-
 [Meet ReverseMarkdown](https://github.com/mysticmind/reversemarkdown-net)
 
 The MIT License (MIT)
@@ -70,8 +54,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ---
-
-This package includes third-party software components licensed under the Apache License, Version 2.0:
 
 [PdfPig](https://github.com/UglyToad/PdfPig)
 
@@ -330,3 +312,18 @@ CMaps for PDF Fonts (http://opensource.adobe.com/wiki/display/cmap/Downloads)
    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
    THE POSSIBILITY OF SUCH DAMAGE.
+
+
+This product is derived from software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+Based on source code originally developed in the PDFBox and 
+FontBox projects.
+
+Copyright (c) 2002-2007, www.pdfbox.org
+
+Includes the Adobe Glyph List
+Copyright 1997, 1998, 2002, 2007, 2010 Adobe Systems Incorporated.
+
+Includes the Zapf Dingbats Glyph List
+Copyright 2002, 2010 Adobe Systems Incorporated.
