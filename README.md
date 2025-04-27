@@ -3,6 +3,14 @@
 任意ファイルをマークダウン形式に変換します。
 
 
+## Supported document types
+
+| type | text | image | table | bold | italic |
+| --- | --- | --- | --- | --- | --- |
+| docx | ✅ | ✅ | ✅ | ✅ | ❌ |
+| pdf (text) | ✅ | 🚧 | ❌ | ❌ | ❌ |
+
+
 ## How to use
 ```cs
 using AnyToMarkdown;
