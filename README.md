@@ -6,7 +6,7 @@
 ## Supported document types
 
 | type | text | image | table | bold | italic |
-| --- | --- | --- | --- | --- | --- |
+| --- | :-: | :-: | :-: | :-: | :-: |
 | docx | ✅ | ✅ | ✅ | ✅ | ❌ |
 | pdf (text) | ✅ | 🚧 | ❌ | ❌ | ❌ |
 
