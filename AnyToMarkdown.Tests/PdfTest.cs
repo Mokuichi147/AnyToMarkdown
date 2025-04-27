@@ -13,6 +13,6 @@ public class PdfTest
         //Assert.Empty(result.Warnings);
 
         // ファイルに変換結果を保存する
-        //File.WriteAllText("sample-docx.md", result.Text);
+        //File.WriteAllText("sample-pdf.md", result.Text);
     }
 }
