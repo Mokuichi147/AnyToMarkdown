@@ -1,6 +1,7 @@
 using System.Text;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
+using SkiaSharp;
 
 namespace AnyToMarkdown;
 
@@ -9,6 +10,7 @@ public static class PdfConverter
     public static ConvertResult Convert(FileStream stream)
     {
         StringBuilder sb = new();
+        List<string> warnings = [];
         using var document = PdfDocument.Open(stream);
         foreach (Page page in document.GetPages())
         {
@@ -30,13 +32,46 @@ public static class PdfConverter
             #endif
             */
 
+            // 単語を行ごとにグループ化
             var lines = GroupWordsIntoLines(words, verticalTolerance);
+            var images = page.GetImages().ToList();
             foreach (var line in lines)
             {
                 // 行内の単語を結合して、Markdown形式に変換
                 var mergedWords = MergeWordsInLine(line, horizontalTolerance);
+
+                // 行内の画像を取得し、Markdown形式に変換
+                var imgs = images.Where(x => x.Bounds.Bottom > line[0].BoundingBox.Bottom).OrderByDescending(x => x.Bounds.Top).ThenBy(x => x.Bounds.Left);
+                foreach (var img in imgs)
+                {
+                    try
+                    {
+                        string base64 = ConvertImageToBase64(img.RawBytes);
+                        sb.AppendLine($"![]({base64})\n");
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add($"Error processing image: {ex.Message}");
+                    }
+                    
+                    images.Remove(img);
+                }
+
                 var lineText = string.Join(" ", mergedWords.Select(x => string.Join("", x.Select(w => w.Text))));
                 sb.AppendLine(lineText + "\n");
+            }
+
+            foreach (var img in images)
+            {
+                try
+                {
+                    string base64 = ConvertImageToBase64(img.RawBytes);
+                    sb.AppendLine($"![]({base64})\n");
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add($"Error processing image: {ex.Message}");
+                }
             }
         }
         var markdown = sb.ToString().Trim();
@@ -44,12 +79,18 @@ public static class PdfConverter
         #if DEBUG
         Console.WriteLine("PDF Conversion Result:");
         Console.WriteLine(markdown);
+
+        Console.WriteLine("PDF Conversion Warnings:");
+        foreach (var warning in warnings)
+        {
+            Console.WriteLine(warning);
+        }
         #endif
 
         return new ConvertResult
         {
             Text = markdown,
-            Warnings = [],
+            Warnings = warnings,
         };
     }
 
@@ -148,5 +189,26 @@ public static class PdfConverter
         {
             return words.Select(selector).Max();
         }
+    }
+
+
+    /// <summary>
+    /// PDFPigで取得した画像の RawBytes をSkiaSharpでデコードし、BASE64文字列として返すメソッド
+    /// </summary>
+    /// <param name="imageBytes">PDFから抽出した画像のバイト配列</param>
+    /// <param name="quality">エンコードの品質 (0-100)</param>
+    /// <returns>PNG形式の画像を埋め込むためのData URL形式文字列 (例: "data:image/png;base64,......")</returns>
+    static string ConvertImageToBase64(ReadOnlySpan<byte> imageBytes, int quality = 75)
+    {
+        using var bitmap = SKBitmap.Decode(imageBytes);
+        using var encodedData = bitmap.Encode(SKEncodedImageFormat.Png, quality);
+        if (encodedData == null)
+        {
+            return string.Empty;
+        }
+
+        byte[] webpBytes = encodedData.ToArray();
+        string base64 = System.Convert.ToBase64String(webpBytes);
+        return $"data:image/png;base64,{base64}";
     }
 }
