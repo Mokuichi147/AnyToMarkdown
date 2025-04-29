@@ -10,7 +10,7 @@ public static class PdfConverter
     public static ConvertResult Convert(FileStream stream)
     {
         StringBuilder sb = new();
-        List<string> warnings = [];
+        ConvertResult result = new();
         using var document = PdfDocument.Open(stream);
         foreach (Page page in document.GetPages())
         {
@@ -34,15 +34,18 @@ public static class PdfConverter
 
             // 単語を行ごとにグループ化
             var lines = GroupWordsIntoLines(words, verticalTolerance);
-            var images = page.GetImages().ToList();
+            var images = page.GetImages()
+                .OrderByDescending(x => x.Bounds.Top)
+                .ThenBy(x => x.Bounds.Left)
+                .ToList();
+
             foreach (var line in lines)
             {
                 // 行内の単語を結合して、Markdown形式に変換
                 var mergedWords = MergeWordsInLine(line, horizontalTolerance);
 
                 // 行内の画像を取得し、Markdown形式に変換
-                var imgs = images.Where(x => x.Bounds.Bottom > line[0].BoundingBox.Bottom).OrderByDescending(x => x.Bounds.Top).ThenBy(x => x.Bounds.Left);
-                foreach (var img in imgs)
+                foreach (var img in images.Where(x => x.Bounds.Bottom > line[0].BoundingBox.Bottom).ToList())
                 {
                     try
                     {
@@ -51,7 +54,7 @@ public static class PdfConverter
                     }
                     catch (Exception ex)
                     {
-                        warnings.Add($"Error processing image: {ex.Message}");
+                        result.Warnings.Add($"Error processing image: {ex.Message}");
                     }
                     
                     images.Remove(img);
@@ -70,28 +73,24 @@ public static class PdfConverter
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"Error processing image: {ex.Message}");
+                    result.Warnings.Add($"Error processing image: {ex.Message}");
                 }
             }
         }
-        var markdown = sb.ToString().Trim();
+        result.Text = sb.ToString().Trim();
 
         #if DEBUG
         Console.WriteLine("PDF Conversion Result:");
-        Console.WriteLine(markdown);
+        Console.WriteLine(result.Text);
 
         Console.WriteLine("PDF Conversion Warnings:");
-        foreach (var warning in warnings)
+        foreach (var warning in result.Warnings)
         {
             Console.WriteLine(warning);
         }
         #endif
 
-        return new ConvertResult
-        {
-            Text = markdown,
-            Warnings = warnings,
-        };
+        return result;
     }
 
     /// <summary>
