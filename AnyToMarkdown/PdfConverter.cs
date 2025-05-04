@@ -241,6 +241,9 @@ public static class PdfConverter
         StringBuilder sb = new();
         int maxColumns = tableData.Max(row => row.Count);
         
+        // 各列の配置を推測 (左寄せ:0, 中央寄せ:1, 右寄せ:2)
+        var columnAlignments = DetermineColumnAlignments(tableData, maxColumns);
+        
         // テーブルの各行を処理
         for (int rowIndex = 0; rowIndex < tableData.Count; rowIndex++)
         {
@@ -264,13 +267,90 @@ public static class PdfConverter
                 sb.Append('|');
                 for (int i = 0; i < maxColumns; i++)
                 {
-                    sb.Append(" --- |");
+                    // 列の配置に基づいて区切り行のフォーマットを設定
+                    string alignmentMark = columnAlignments[i] switch
+                    {
+                        1 => " :---: |", // 中央寄せ
+                        2 => " ---: |",  // 右寄せ
+                        _ => " --- |"    // デフォルト（左寄せ）
+                    };
+                    sb.Append(alignmentMark);
                 }
                 sb.AppendLine();
             }
         }
         
         return sb.ToString();
+    }
+    
+    /// <summary>
+    /// テーブルの各列の配置（左/中央/右寄せ）を推測する
+    /// </summary>
+    /// <param name="tableData">テーブルデータ</param>
+    /// <param name="columnCount">列数</param>
+    /// <returns>各列の配置情報（0:左寄せ, 1:中央寄せ, 2:右寄せ）</returns>
+    private static int[] DetermineColumnAlignments(List<List<List<Word>>> tableData, int columnCount)
+    {
+        int[] alignments = new int[columnCount];
+        
+        // 列ごとに配置を分析
+        for (int colIndex = 0; colIndex < columnCount; colIndex++)
+        {
+            // この列のすべてのセルの位置情報を収集
+            List<(double left, double right, double width, double center)> cellPositions = [];
+            
+            // 各行におけるこの列のセル位置を取得
+            foreach (var row in tableData)
+            {
+                if (colIndex < row.Count && row[colIndex].Count > 0)
+                {
+                    var wordGroup = row[colIndex];
+                    double left = wordGroup.First().BoundingBox.Left;
+                    double right = wordGroup.Last().BoundingBox.Right;
+                    double width = right - left;
+                    double center = left + (width / 2);
+                    
+                    cellPositions.Add((left, right, width, center));
+                }
+            }
+            
+            if (cellPositions.Count < 2)
+            {
+                // データが少なすぎる場合はデフォルトで左寄せ
+                alignments[colIndex] = 0;
+                continue;
+            }
+            
+            // この列の基準となる幅と位置を計算
+            double avgWidth = cellPositions.Average(p => p.width);
+            double avgLeft = cellPositions.Average(p => p.left);
+            double avgRight = cellPositions.Average(p => p.right);
+            double avgCenter = cellPositions.Average(p => p.center);
+            
+            // 位置のばらつきを計算
+            double leftVariance = cellPositions.Average(p => Math.Pow(p.left - avgLeft, 2));
+            double rightVariance = cellPositions.Average(p => Math.Pow(p.right - avgRight, 2));
+            double centerVariance = cellPositions.Average(p => Math.Pow(p.center - avgCenter, 2));
+            
+            // 配置の推測
+            if (rightVariance < leftVariance && rightVariance < centerVariance)
+            {
+                // 右端の揃いが良い、または数値データなら右寄せ
+                alignments[colIndex] = 2;
+            }
+            else if (centerVariance < leftVariance && centerVariance < rightVariance)
+            {
+                // 中央の揃いが最も良ければ中央寄せ
+                alignments[colIndex] = 1;
+            }
+            else
+            {
+                // それ以外は左寄せ
+                alignments[colIndex] = 0;
+            }
+        }
+        
+        return alignments;
     }
 
     /// <summary>
