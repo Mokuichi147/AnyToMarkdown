@@ -8,7 +8,7 @@
 | type | text | image | table | bold | italic |
 | --- | :-: | :-: | :-: | :-: | :-: |
 | docx | ✅ | ✅ | ✅ | ✅ | ❌ |
-| pdf (text) | ✅ | ✅ | ❌ | ❌ | ❌ |
+| pdf (text) | ✅ | ✅ | ✅ | ❌ | ❌ |
 
 
 ## How to use

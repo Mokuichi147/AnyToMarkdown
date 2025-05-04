@@ -39,29 +39,47 @@ public static class PdfConverter
                 .ThenBy(x => x.Bounds.Left)
                 .ToList();
 
-            foreach (var line in lines)
+            // 行ごとの処理
+            int currentLineIndex = 0;
+            while (currentLineIndex < lines.Count)
             {
-                // 行内の単語を結合して、Markdown形式に変換
-                var mergedWords = MergeWordsInLine(line, horizontalTolerance);
-
-                // 行内の画像を取得し、Markdown形式に変換
-                foreach (var img in images.Where(x => x.Bounds.Bottom > line[0].BoundingBox.Bottom).ToList())
+                var mergedWords = MergeWordsInLine(lines[currentLineIndex], horizontalTolerance);
+                
+                // テーブル構造の検出を試みる
+                var tableData = TryDetectTable(lines, currentLineIndex, horizontalTolerance, verticalTolerance);
+                
+                if (tableData.IsTable)
                 {
-                    try
-                    {
-                        string base64 = ConvertImageToBase64(img.RawBytes);
-                        sb.AppendLine($"![]({base64})\n");
-                    }
-                    catch (Exception ex)
-                    {
-                        result.Warnings.Add($"Error processing image: {ex.Message}");
-                    }
+                    // テーブルが検出されたら、マークダウン形式のテーブルを作成
+                    sb.AppendLine(ConvertToMarkdownTable(tableData.TableLines));
+                    sb.AppendLine(); // テーブル後の空行
                     
-                    images.Remove(img);
+                    // テーブルの行数分、インデックスを進める
+                    currentLineIndex += tableData.RowCount;
                 }
+                else
+                {
+                    // 行内の画像を取得し、Markdown形式に変換
+                    foreach (var img in images.Where(x => x.Bounds.Bottom > lines[currentLineIndex][0].BoundingBox.Bottom).ToList())
+                    {
+                        try
+                        {
+                            string base64 = ConvertImageToBase64(img.RawBytes);
+                            sb.AppendLine($"![]({base64})\n");
+                        }
+                        catch (Exception ex)
+                        {
+                            result.Warnings.Add($"Error processing image: {ex.Message}");
+                        }
+                        
+                        images.Remove(img);
+                    }
 
-                var lineText = string.Join(" ", mergedWords.Select(x => string.Join("", x.Select(w => w.Text))));
-                sb.AppendLine(lineText + "\n");
+                    var lineText = string.Join(" ", mergedWords.Select(x => string.Join("", x.Select(w => w.Text))));
+                    sb.AppendLine(lineText + "\n");
+                    
+                    currentLineIndex++;
+                }
             }
 
             foreach (var img in images)
@@ -91,6 +109,168 @@ public static class PdfConverter
         #endif
 
         return result;
+    }
+
+    /// <summary>
+    /// テーブル構造を検出する関数
+    /// </summary>
+    /// <param name="lines">すべての行データ</param>
+    /// <param name="startLineIndex">検査を開始する行のインデックス</param>
+    /// <param name="horizontalTolerance">水平方向の許容値</param>
+    /// <param name="verticalTolerance">垂直方向の許容値</param>
+    /// <returns>テーブル情報を含む（TableDetectionResult）オブジェクト</returns>
+    private static TableDetectionResult TryDetectTable(List<List<Word>> lines, int startLineIndex, double horizontalTolerance, double verticalTolerance)
+    {
+        // 最低2行2列以上のデータが必要
+        if (startLineIndex >= lines.Count - 1)
+        {
+            return new TableDetectionResult { IsTable = false };
+        }
+
+        // 最初の行をベースにカラム位置を特定
+        var firstLineWords = MergeWordsInLine(lines[startLineIndex], horizontalTolerance);
+        if (firstLineWords.Count < 2)
+        {
+            // 2列未満ならテーブルではない
+            return new TableDetectionResult { IsTable = false };
+        }
+
+        // カラム位置（X座標の境界値）を記録
+        List<double> columnPositions = [];
+        foreach (var wordGroup in firstLineWords)
+        {
+            double midPoint = (wordGroup.First().BoundingBox.Left + wordGroup.Last().BoundingBox.Right) / 2;
+            columnPositions.Add(midPoint);
+        }
+
+        // テーブル候補の行を収集
+        List<List<List<Word>>> tableLines = new();
+        tableLines.Add(firstLineWords);
+        
+        int rowCount = 1;
+        for (int i = startLineIndex + 1; i < lines.Count; i++)
+        {
+            var nextLineWords = MergeWordsInLine(lines[i], horizontalTolerance);
+            
+            // 以下の条件のいずれかを満たす場合、テーブル構造でない可能性が高い
+            // 1. 次の行のワード数が著しく異なる（列数が変化）
+            // 2. 行間の距離が通常より大きい（テーブル行間は一定）
+            if (Math.Abs(nextLineWords.Count - firstLineWords.Count) > 1)
+            {
+                break;
+            }
+            
+            // 行間距離をチェック (2行目以降)
+            if (tableLines.Count > 1)
+            {
+                var prevLineBottom = lines[i-1][0].BoundingBox.Bottom;
+                var currLineBottom = lines[i][0].BoundingBox.Bottom;
+                var distanceBetweenLines = Math.Abs(prevLineBottom - currLineBottom);
+                
+                // 最初の行間距離の基準値
+                var firstLineDistance = Math.Abs(lines[startLineIndex][0].BoundingBox.Bottom - 
+                                               lines[startLineIndex + 1][0].BoundingBox.Bottom);
+                
+                // 行間距離が基準値から大きく外れている場合は、テーブルの終了と判断
+                if (Math.Abs(distanceBetweenLines - firstLineDistance) > verticalTolerance * 2)
+                {
+                    break;
+                }
+            }
+            
+            // 列位置の一致度を検証
+            bool columnsAligned = true;
+            if (nextLineWords.Count >= 2)
+            {
+                for (int col = 0; col < Math.Min(nextLineWords.Count, columnPositions.Count); col++)
+                {
+                    // 各列の中心位置がある程度一致しているか確認
+                    if (col < nextLineWords.Count)
+                    {
+                        double midPoint = (nextLineWords[col].First().BoundingBox.Left + 
+                                          nextLineWords[col].Last().BoundingBox.Right) / 2;
+                        
+                        if (Math.Abs(midPoint - columnPositions[col]) > horizontalTolerance * 3)
+                        {
+                            columnsAligned = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                columnsAligned = false;
+            }
+            
+            if (!columnsAligned)
+            {
+                break;
+            }
+            
+            tableLines.Add(nextLineWords);
+            rowCount++;
+        }
+        
+        // 最低2行2列以上のデータがあればテーブルとして認識
+        if (rowCount >= 2 && firstLineWords.Count >= 2)
+        {
+            return new TableDetectionResult
+            {
+                IsTable = true,
+                TableLines = tableLines,
+                RowCount = rowCount
+            };
+        }
+        
+        return new TableDetectionResult { IsTable = false };
+    }
+    
+    /// <summary>
+    /// テーブルデータをマークダウン形式に変換する
+    /// </summary>
+    /// <param name="tableData">テーブルの行と列のデータ</param>
+    /// <returns>マークダウン形式のテーブル文字列</returns>
+    private static string ConvertToMarkdownTable(List<List<List<Word>>> tableData)
+    {
+        if (tableData == null || tableData.Count == 0)
+        {
+            return string.Empty;
+        }
+        
+        StringBuilder sb = new();
+        int maxColumns = tableData.Max(row => row.Count);
+        
+        // テーブルの各行を処理
+        for (int rowIndex = 0; rowIndex < tableData.Count; rowIndex++)
+        {
+            var row = tableData[rowIndex];
+            sb.Append('|');
+            
+            // 各列のデータを追加
+            for (int colIndex = 0; colIndex < maxColumns; colIndex++)
+            {
+                string cellText = colIndex < row.Count 
+                    ? string.Join("", row[colIndex].Select(w => w.Text)) 
+                    : "";
+                    
+                sb.Append($" {cellText.Trim()} |");
+            }
+            sb.AppendLine();
+            
+            // 先頭行の後にヘッダー区切り行を追加
+            if (rowIndex == 0)
+            {
+                sb.Append('|');
+                for (int i = 0; i < maxColumns; i++)
+                {
+                    sb.Append(" --- |");
+                }
+                sb.AppendLine();
+            }
+        }
+        
+        return sb.ToString();
     }
 
     /// <summary>
@@ -209,5 +389,26 @@ public static class PdfConverter
         byte[] webpBytes = encodedData.ToArray();
         string base64 = System.Convert.ToBase64String(webpBytes);
         return $"data:image/png;base64,{base64}";
+    }
+    
+    /// <summary>
+    /// テーブル検出の結果を保持するクラス
+    /// </summary>
+    private class TableDetectionResult
+    {
+        /// <summary>
+        /// テーブルが検出されたかどうか
+        /// </summary>
+        public bool IsTable { get; set; }
+        
+        /// <summary>
+        /// テーブルの行数
+        /// </summary>
+        public int RowCount { get; set; }
+        
+        /// <summary>
+        /// テーブルのデータ（行と列の単語グループ）
+        /// </summary>
+        public List<List<List<Word>>> TableLines { get; set; } = [];
     }
 }
