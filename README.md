@@ -15,9 +15,10 @@
 ```cs
 using AnyToMarkdown;
 
-using FileStream stream = File.OpenRead("<filePath>.docx");
-ConvertResult result = DocxConverter.Convert(stream);
+using FileStream stream = File.OpenRead("<filePath>");
+ConvertResult result = AnyConverter.Convert(stream);
 
+// マークダウン形式のテキスト
 Console.WriteLine(result.Text);
 ```
 

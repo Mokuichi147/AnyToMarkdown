@@ -15,6 +15,10 @@ public static class AnyConverter
         {
             return DocxConverter.Convert(stream);
         }
+        else if (fileType == "pdf")
+        {
+            return PdfConverter.Convert(stream);
+        }
         else
         {
             throw new NotSupportedException($"Unsupported file type: {fileType}");
