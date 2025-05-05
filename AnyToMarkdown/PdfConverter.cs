@@ -52,7 +52,6 @@ public static class PdfConverter
                 {
                     // テーブルが検出されたら、マークダウン形式のテーブルを作成
                     sb.AppendLine(ConvertToMarkdownTable(tableData.TableLines));
-                    sb.AppendLine(); // テーブル後の空行
                     
                     // テーブルの行数分、インデックスを進める
                     currentLineIndex += tableData.RowCount;
