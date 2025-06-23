@@ -8,7 +8,8 @@ public class DocxTest
     public void ConvertTest()
     {
         using FileStream stream = File.OpenRead(filePath);
-        ConvertResult result = DocxConverter.Convert(stream);
+        var converter = new DocxConverter();
+        ConvertResult result = converter.Convert(stream);
         Assert.NotNull(result.Text);
         //Assert.Empty(result.Warnings);
 

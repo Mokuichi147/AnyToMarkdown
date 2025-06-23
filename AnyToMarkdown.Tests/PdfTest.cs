@@ -8,7 +8,8 @@ public class PdfTest
     public void ConvertTest()
     {
         using FileStream stream = File.OpenRead(filePath);
-        ConvertResult result = PdfConverter.Convert(stream);
+        var converter = new PdfConverter();
+        ConvertResult result = converter.Convert(stream);
         Assert.NotNull(result.Text);
         //Assert.Empty(result.Warnings);
 
