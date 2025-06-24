@@ -18,12 +18,17 @@ internal class PdfStructureAnalyzer
         // より詳細なフォント分析
         var fontAnalysis = AnalyzeFontDistribution(words);
         
-        foreach (var line in lines)
+        var elements = new List<DocumentElement>();
+        for (int i = 0; i < lines.Count; i++)
         {
-            var element = AnalyzeLine(line, fontAnalysis, horizontalTolerance);
-            documentStructure.Elements.Add(element);
+            var element = AnalyzeLine(lines[i], fontAnalysis, horizontalTolerance);
+            elements.Add(element);
         }
 
+        // 後処理：連続する行の構造パターンを分析してテーブルを検出
+        elements = PostProcessTableDetection(elements);
+        
+        documentStructure.Elements.AddRange(elements);
         return documentStructure;
     }
 
@@ -279,6 +284,129 @@ internal class PdfStructureAnalyzer
         }
         
         return text;
+    }
+
+    private static List<DocumentElement> PostProcessTableDetection(List<DocumentElement> elements)
+    {
+        var result = new List<DocumentElement>();
+        var i = 0;
+
+        while (i < elements.Count)
+        {
+            var current = elements[i];
+            
+            // 連続する行が表形式の可能性があるかチェック
+            var tableCandidate = FindTableSequence(elements, i);
+            
+            if (tableCandidate.Count >= 2) // 最低2行でテーブルを構成
+            {
+                // 全ての候補行をTableRowに変換
+                foreach (var candidate in tableCandidate)
+                {
+                    candidate.Type = ElementType.TableRow;
+                    result.Add(candidate);
+                }
+                i += tableCandidate.Count;
+            }
+            else
+            {
+                result.Add(current);
+                i++;
+            }
+        }
+
+        return result;
+    }
+
+    private static List<DocumentElement> FindTableSequence(List<DocumentElement> elements, int startIndex)
+    {
+        var tableCandidate = new List<DocumentElement>();
+        var i = startIndex;
+
+        while (i < elements.Count)
+        {
+            var current = elements[i];
+            
+            // 空の要素はスキップ
+            if (current.Type == ElementType.Empty)
+            {
+                i++;
+                continue;
+            }
+            
+            // テーブル行の可能性をチェック
+            if (IsLikelyTableRow(current))
+            {
+                tableCandidate.Add(current);
+            }
+            else
+            {
+                // 表形式でない行に遭遇したら終了
+                break;
+            }
+            
+            i++;
+        }
+
+        // 構造の一貫性をチェック
+        if (tableCandidate.Count >= 2 && HasConsistentTableStructure(tableCandidate))
+        {
+            return tableCandidate;
+        }
+
+        return new List<DocumentElement>();
+    }
+
+    private static bool IsLikelyTableRow(DocumentElement element)
+    {
+        var text = element.Content.Trim();
+        
+        // 明らかにヘッダーではない短い行
+        if (text.Length < 100 && !text.EndsWith("。") && !text.EndsWith("."))
+        {
+            // 複数の単語/要素に分かれている
+            var parts = text.Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && parts.Length <= 10) // 2-10列が一般的
+            {
+                // 単語間に適切な間隔がある（Words情報を使用）
+                if (element.Words != null && element.Words.Count >= 2)
+                {
+                    var avgGap = CalculateAverageWordGap(element.Words);
+                    return avgGap > 10; // 10pt以上の間隔
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasConsistentTableStructure(List<DocumentElement> candidates)
+    {
+        if (candidates.Count < 2) return false;
+
+        var columnCounts = candidates.Select(c => 
+            c.Content.Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries).Length
+        ).ToList();
+
+        // 列数の一貫性をチェック（±1の差を許容）
+        var minColumns = columnCounts.Min();
+        var maxColumns = columnCounts.Max();
+        
+        return maxColumns - minColumns <= 1 && minColumns >= 2;
+    }
+
+    private static double CalculateAverageWordGap(List<Word> words)
+    {
+        if (words.Count < 2) return 0;
+
+        var gaps = new List<double>();
+        for (int i = 1; i < words.Count; i++)
+        {
+            gaps.Add(words[i].BoundingBox.Left - words[i-1].BoundingBox.Right);
+        }
+
+        return gaps.Average();
     }
 }
 
