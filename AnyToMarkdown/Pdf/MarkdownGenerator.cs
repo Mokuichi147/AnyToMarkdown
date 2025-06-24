@@ -73,16 +73,17 @@ internal static class MarkdownGenerator
             return Math.Min(parts.Length, 6); // 最大6レベル
         }
         
-        // フォントサイズベースの判定（最も重要な指標）
+        // フォントサイズベースの判定（相対的評価に変更）
         if (element.FontSize > 18) return 1;
         if (element.FontSize > 16) return 2;
         if (element.FontSize > 14) return 3;
         if (element.FontSize > 12) return 4;
         
-        // テキスト長ベースの判定
-        if (text.Length <= 15) return 1;
-        if (text.Length <= 25) return 2;
-        if (text.Length <= 40) return 3;
+        // 短いテキストは上位レベルのヘッダーになりやすい
+        if (text.Length <= 30) return 2;
+        if (text.Length <= 50) return 3;
+        
+        // デフォルトは4レベル
         return 4;
     }
 
@@ -219,13 +220,21 @@ internal static class MarkdownGenerator
         var text = row.Content;
         var words = row.Words;
         
-        // パイプ文字があれば既にMarkdownテーブル形式
+        // パイプ文字があれば既にMarkdownテーブル形式（改良版）
         if (text.Contains("|"))
         {
-            return text.Split('|')
+            var tableCells = text.Split('|')
                 .Select(s => s.Trim())
                 .Where(s => !string.IsNullOrEmpty(s))
                 .ToList();
+            
+            // 改行を含むセルの処理
+            for (int i = 0; i < tableCells.Count; i++)
+            {
+                tableCells[i] = ProcessMultiLineCell(tableCells[i]);
+            }
+            
+            return tableCells;
         }
         
         // 単語間の大きなギャップでセルを分割
@@ -358,6 +367,24 @@ internal static class MarkdownGenerator
     {
         // この関数は不要 - フォントベースの書式設定が既に適用されている
         return text;
+    }
+    
+    private static string ProcessMultiLineCell(string cellContent)
+    {
+        if (string.IsNullOrWhiteSpace(cellContent)) return cellContent;
+        
+        // 改行文字を <br> タグに変換（Markdownテーブル内での改行表現）
+        cellContent = cellContent.Replace("\r\n", "<br>")
+                                .Replace("\n", "<br>")
+                                .Replace("\r", "<br>");
+        
+        // 連続する <br> タグを単一に統合
+        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"(<br>\s*){2,}", "<br>");
+        
+        // パイプ文字をエスケープ
+        cellContent = cellContent.Replace("|", "\\|");
+        
+        return cellContent.Trim();
     }
 
     private static string PostProcessMarkdown(string markdown)
