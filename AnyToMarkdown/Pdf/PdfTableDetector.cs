@@ -30,19 +30,34 @@ internal class PdfTableDetector
         var tableLines = new List<List<List<Word>>> { firstLineWords };
         
         int rowCount = 1;
+        int consecutiveFailures = 0;
+        
         for (int i = startLineIndex + 1; i < lines.Count; i++)
         {
             var nextLineWords = PdfWordProcessor.MergeWordsInLine(lines[i], _horizontalTolerance);
             
-            if (!IsValidTableRow(nextLineWords, firstLineWords.Count, lines, i, startLineIndex, columnPositions))
+            // 空行をスキップ
+            if (nextLineWords.Count == 0 || 
+                nextLineWords.All(group => group.All(w => string.IsNullOrWhiteSpace(w.Text))))
             {
-                break;
+                consecutiveFailures++;
+                if (consecutiveFailures >= 2) break;
+                continue;
             }
             
+            if (!IsValidTableRow(nextLineWords, firstLineWords.Count, lines, i, startLineIndex, columnPositions))
+            {
+                consecutiveFailures++;
+                if (consecutiveFailures >= 2) break;
+                continue;
+            }
+            
+            consecutiveFailures = 0;
             tableLines.Add(nextLineWords);
             rowCount++;
         }
         
+        // テーブル検出基準を緩和
         if (rowCount >= 2 && firstLineWords.Count >= 2)
         {
             return new TableDetectionResult
@@ -70,17 +85,23 @@ internal class PdfTableDetector
     private bool IsValidTableRow(List<List<Word>> nextLineWords, int expectedColumnCount, 
         List<List<Word>> lines, int currentIndex, int startLineIndex, List<double> columnPositions)
     {
-        if (Math.Abs(nextLineWords.Count - expectedColumnCount) > 1)
+        // 列数の検証を緩和（空のセルを許可）
+        if (nextLineWords.Count == 0 || nextLineWords.Count > expectedColumnCount * 2)
         {
             return false;
         }
         
+        // 行間隔チェックを緩和
         if (!IsLineSpacingConsistent(lines, currentIndex, startLineIndex))
         {
-            return false;
+            // 行間隔が一致しなくても、列の配置が合っていればテーブル行と認識
+            if (!AreColumnsAligned(nextLineWords, columnPositions))
+            {
+                return false;
+            }
         }
         
-        return AreColumnsAligned(nextLineWords, columnPositions);
+        return true;
     }
     
     private bool IsLineSpacingConsistent(List<List<Word>> lines, int currentIndex, int startLineIndex)

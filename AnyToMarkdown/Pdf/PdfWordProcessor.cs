@@ -7,18 +7,32 @@ internal static class PdfWordProcessor
     public static List<List<Word>> GroupWordsIntoLines(IEnumerable<Word> words, double yThreshold)
     {
         var lines = new List<List<Word>>();
+        var sortedWords = words.OrderByDescending(w => w.BoundingBox.Bottom).ThenBy(w => w.BoundingBox.Left);
 
-        foreach (var word in words)
+        foreach (var word in sortedWords)
         {
             bool added = false;
-            foreach (var line in lines)
+            double bestMatch = double.MaxValue;
+            int bestLineIndex = -1;
+            
+            // より良いマッチング：最も近い行を見つける
+            for (int i = 0; i < lines.Count; i++)
             {
-                if (Math.Abs(word.BoundingBox.Bottom - line.Select(x => x.BoundingBox.Bottom).Average()) < yThreshold)
+                var line = lines[i];
+                var avgBottom = line.Select(x => x.BoundingBox.Bottom).Average();
+                var distance = Math.Abs(word.BoundingBox.Bottom - avgBottom);
+                
+                if (distance < yThreshold && distance < bestMatch)
                 {
-                    line.Add(word);
-                    added = true;
-                    break;
+                    bestMatch = distance;
+                    bestLineIndex = i;
                 }
+            }
+            
+            if (bestLineIndex >= 0)
+            {
+                lines[bestLineIndex].Add(word);
+                added = true;
             }
 
             if (!added)
@@ -27,12 +41,14 @@ internal static class PdfWordProcessor
             }
         }
 
+        // 各行内で左から右へソート
         for (int i = 0; i < lines.Count; i++)
         {
             lines[i] = [.. lines[i].OrderBy(w => w.BoundingBox.Left)];
         }
         
-        lines = [.. lines.OrderByDescending(line => line[0].BoundingBox.Bottom)];
+        // 行を上から下へソート
+        lines = [.. lines.OrderByDescending(line => line.Select(w => w.BoundingBox.Bottom).Average())];
 
         return lines;
     }

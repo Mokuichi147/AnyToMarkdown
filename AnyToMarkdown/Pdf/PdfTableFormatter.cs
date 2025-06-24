@@ -25,10 +25,10 @@ internal static class PdfTableFormatter
             for (int colIndex = 0; colIndex < maxColumns; colIndex++)
             {
                 string cellText = colIndex < row.Count 
-                    ? string.Join("", row[colIndex].Select(w => w.Text)) 
+                    ? ProcessCellText(row[colIndex])
                     : "";
                     
-                sb.Append($" {cellText.Trim()} |");
+                sb.Append($" {cellText} |");
             }
             sb.AppendLine();
             
@@ -50,6 +50,26 @@ internal static class PdfTableFormatter
         }
         
         return sb.ToString();
+    }
+    
+    private static string ProcessCellText(List<Word> words)
+    {
+        if (words == null || words.Count == 0)
+            return "";
+            
+        var cellText = string.Join("", words.Select(w => w.Text)).Trim();
+        
+        // セル内の改行を適切に処理
+        cellText = cellText.Replace("\n", "<br>").Replace("\r", "");
+        
+        // 空のセルを適切に処理
+        if (string.IsNullOrWhiteSpace(cellText))
+            return " ";
+            
+        // Markdownテーブルでパイプ文字をエスケープ
+        cellText = cellText.Replace("|", "\\|");
+        
+        return cellText;
     }
     
     private static int[] DetermineColumnAlignments(List<List<List<Word>>> tableData, int columnCount)
