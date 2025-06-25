@@ -473,7 +473,12 @@ internal class PdfStructureAnalyzer
             result.Append(groupResult);
         }
         
-        return result.ToString();
+        var finalResult = result.ToString();
+        
+        // 禁止文字（null文字など）を除去
+        finalResult = finalResult.Replace("\0", "");
+        
+        return finalResult;
     }
     
     private static string BuildFormattedWordGroup(List<Word> wordGroup)
@@ -499,7 +504,9 @@ internal class PdfStructureAnalyzer
             }
             
             currentFormatting = wordFormatting;
-            currentSegment.Append(word.Text);
+            // null文字を除去してからテキストを追加
+            var cleanText = word.Text?.Replace("\0", "") ?? "";
+            currentSegment.Append(cleanText);
         }
         
         // 最後のセグメントを処理
@@ -609,6 +616,9 @@ internal class PdfStructureAnalyzer
     
     private static string ApplyFormatting(string text, FontFormatting formatting)
     {
+        // null文字を除去
+        text = text.Replace("\0", "");
+        
         if (formatting.IsBold && formatting.IsItalic)
         {
             return $"***{text}***";

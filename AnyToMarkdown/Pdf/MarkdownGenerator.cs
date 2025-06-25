@@ -242,9 +242,9 @@ internal static class MarkdownGenerator
             
         // 日本語の箇条書き記号を変換
         if (text.StartsWith("・"))
-            return "- " + text.Substring(1).Trim();
+            return "- " + text.Substring(1).Trim().Replace("\0", "");
         if (text.StartsWith("•") || text.StartsWith("◦"))
-            return "- " + text.Substring(1).Trim();
+            return "- " + text.Substring(1).Trim().Replace("\0", "");
             
         // 数字付きリストの処理（より柔軟に）
         var numberListMatch = System.Text.RegularExpressions.Regex.Match(text, @"^(\d{1,3})[\.\)](.*)");
@@ -252,6 +252,8 @@ internal static class MarkdownGenerator
         {
             var number = numberListMatch.Groups[1].Value;
             var content = numberListMatch.Groups[2].Value.Trim();
+            // null文字を除去
+            content = content.Replace("\0", "");
             return $"{number}. {content}";
         }
             
@@ -261,10 +263,13 @@ internal static class MarkdownGenerator
         {
             var number = parenNumberMatch.Groups[1].Value;
             var content = parenNumberMatch.Groups[2].Value.Trim();
+            // null文字を除去
+            content = content.Replace("\0", "");
             return $"{number}. {content}";
         }
             
         // その他はダッシュを付ける
+        text = text.Replace("\0", "");
         return $"- {text}";
     }
 
@@ -304,15 +309,19 @@ internal static class MarkdownGenerator
         var maxColumns = 0;
         var allCells = new List<List<string>>();
 
-        // 各行をセルに分割（基本的な処理に戻す）
-        foreach (var row in tableRows)
+        // 複数行セルの検出と統合
+        var processedCells = ProcessMultiRowCells(tableRows);
+        
+        // 各行をセルに分割（改良版）
+        foreach (var cells in processedCells)
         {
-            var cells = ParseTableCells(row);
             // 空のセルを除外してより正確なテーブルを作成
             if (cells.Count > 0 && cells.Any(c => !string.IsNullOrWhiteSpace(c)))
             {
-                allCells.Add(cells);
-                maxColumns = Math.Max(maxColumns, cells.Count);
+                // セル内の<br>を適切に処理
+                var processedCellRow = cells.Select(ProcessMultiLineCell).ToList();
+                allCells.Add(processedCellRow);
+                maxColumns = Math.Max(maxColumns, processedCellRow.Count);
             }
         }
 
@@ -813,6 +822,9 @@ internal static class MarkdownGenerator
     {
         if (string.IsNullOrWhiteSpace(markdown))
             return "";
+        
+        // 禁止文字（null文字など）を除去
+        markdown = RemoveForbiddenCharacters(markdown);
             
         var lines = markdown.Split('\n');
         var processedLines = new List<string>();
@@ -869,5 +881,34 @@ internal static class MarkdownGenerator
         }
         
         return string.Join("\n", processedLines);
+    }
+    
+    private static string RemoveForbiddenCharacters(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        
+        // null文字（U+0000）を除去
+        text = text.Replace("\0", "");
+        
+        // その他の制御文字を除去（印刷可能文字、空白、改行、タブ以外）
+        var cleanedText = new StringBuilder();
+        foreach (char c in text)
+        {
+            // 印刷可能文字、空白類、改行、タブを保持
+            if (char.IsControl(c))
+            {
+                if (c == '\n' || c == '\r' || c == '\t')
+                {
+                    cleanedText.Append(c);
+                }
+                // その他の制御文字は除去
+            }
+            else
+            {
+                cleanedText.Append(c);
+            }
+        }
+        
+        return cleanedText.ToString();
     }
 }
