@@ -84,20 +84,15 @@ internal static class MarkdownGenerator
         if (hierarchicalMatch.Success)
         {
             var parts = hierarchicalMatch.Groups[1].Value.Split('.');
-            return Math.Min(parts.Length, 6); // 最大6レベル
+            return Math.Min(parts.Length, 4);
         }
         
-        // フォントサイズベースの判定（相対的評価に変更）
-        if (element.FontSize > 18) return 1;
-        if (element.FontSize > 16) return 2;
-        if (element.FontSize > 14) return 3;
-        if (element.FontSize > 12) return 4;
+        // フォントサイズベースの相対的判定
+        var fontSizeRatio = element.FontSize / 12.0; // 12ptを基準とする
+        if (fontSizeRatio > 1.5) return 1;
+        if (fontSizeRatio > 1.3) return 2;
+        if (fontSizeRatio > 1.1) return 3;
         
-        // 短いテキストは上位レベルのヘッダーになりやすい
-        if (text.Length <= 30) return 2;
-        if (text.Length <= 50) return 3;
-        
-        // デフォルトは4レベル
         return 4;
     }
 
@@ -180,12 +175,17 @@ internal static class MarkdownGenerator
         }
 
         // テーブル行が不足している場合は空文字を返す
-        if (allCells.Count < 2) return "";
+        if (allCells.Count < 1) return "";
 
-        // 列数の正規化：最も一般的な列数に合わせる
-        var columnCounts = allCells.GroupBy(row => row.Count).OrderByDescending(g => g.Count());
-        var normalizedColumnCount = columnCounts.First().Key;
-        maxColumns = Math.Min(maxColumns, normalizedColumnCount + 1); // 最大1列の差を許容
+        // 列数の正規化：最も一般的な列数に合わせる（より柔軟に）
+        if (allCells.Count > 0)
+        {
+            var columnCounts = allCells.GroupBy(row => row.Count).OrderByDescending(g => g.Count());
+            var normalizedColumnCount = columnCounts.First().Key;
+            
+            // 少なくとも2列は確保し、最大列数との差を2列まで許容
+            maxColumns = Math.Max(Math.Min(maxColumns, normalizedColumnCount + 2), 2);
+        }
 
         // 列数を統一
         foreach (var cells in allCells)
@@ -273,10 +273,13 @@ internal static class MarkdownGenerator
             return SplitTextIntoCells(text);
         }
 
-        // ダイナミックな閾値設定 - より複雑なテーブルに対応
+        // より適応的な閾値設定
         var avgGap = gaps.Average();
-        var medianGap = gaps.OrderBy(g => g).ElementAt(gaps.Count / 2);
-        var threshold = Math.Max(Math.Max(avgGap * 1.5, medianGap * 2), 15);
+        var sortedGaps = gaps.OrderBy(g => g).ToList();
+        var medianGap = sortedGaps[sortedGaps.Count / 2];
+        
+        // 大きなギャップを特定するための閾値（より保守的に）
+        var threshold = Math.Max(avgGap * 1.8, Math.Max(medianGap * 1.5, 18));
 
         currentCell.Add(words[0]);
         
