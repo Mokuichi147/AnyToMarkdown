@@ -35,6 +35,7 @@ internal class PdfStructureAnalyzer
         elements = PostProcessElementClassification(elements, fontAnalysis);
         
         documentStructure.Elements.AddRange(elements);
+        documentStructure.FontAnalysis = fontAnalysis;
         return documentStructure;
     }
 
@@ -60,12 +61,31 @@ internal class PdfStructureAnalyzer
                             .OrderByDescending(g => g.Count())
                             .ToList();
 
+        // 最も頻度の高いフォントサイズをベースとして使用
         double baseFontSize = fontSizes.First().Key;
         string dominantFont = fontNames.First().Key;
 
-        // 本番環境対応：相対的な閾値設定
-        double largeFontThreshold = baseFontSize * 1.2;
-        double smallFontThreshold = baseFontSize * 0.8;
+        // 段落レベルのテキストを探してより正確なベースサイズを決定
+        var paragraphWords = words.Where(w => 
+        {
+            var text = w.Text?.Trim();
+            return !string.IsNullOrEmpty(text) && 
+                   text.Length > 3 && 
+                   !text.All(char.IsDigit) &&
+                   !(text.StartsWith("#") || text.StartsWith("-") || text.StartsWith("*"));
+        }).ToList();
+
+        if (paragraphWords.Count > 0)
+        {
+            var paragraphFontSizes = paragraphWords.GroupBy(w => Math.Round(w.BoundingBox.Height, 1))
+                                                   .OrderByDescending(g => g.Count())
+                                                   .ToList();
+            baseFontSize = paragraphFontSizes.First().Key;
+        }
+
+        // より保守的な閾値設定
+        double largeFontThreshold = baseFontSize * 1.15;
+        double smallFontThreshold = baseFontSize * 0.85;
 
         return new FontAnalysis
         {
@@ -133,13 +153,13 @@ internal class PdfStructureAnalyzer
         var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;
         
         // 明らかに大きなフォントサイズの場合
-        if (fontSizeRatio > 1.2 && !cleanText.EndsWith("。") && !cleanText.EndsWith("."))
+        if (fontSizeRatio > 1.15 && !cleanText.EndsWith("。") && !cleanText.EndsWith("."))
         {
             return ElementType.Header;
         }
         
         // 中程度のフォントサイズでヘッダーパターンを持つ場合
-        if (fontSizeRatio >= 1.1 && IsHeaderLike(cleanText))
+        if (fontSizeRatio >= 1.05 && IsHeaderLike(cleanText))
         {
             return ElementType.Header;
         }
@@ -846,16 +866,19 @@ internal class PdfStructureAnalyzer
         return false;
     }
     
-    private static bool CouldBeHeader(DocumentElement current, DocumentElement previous, DocumentElement next, FontAnalysis fontAnalysis)
+    private static bool CouldBeHeader(DocumentElement current, DocumentElement? previous, DocumentElement? next, FontAnalysis fontAnalysis)
     {
         var text = current.Content.Trim();
         
         // 明らかにヘッダーではないパターンを除外
         if (text.EndsWith("。") || text.EndsWith(".") || text.Contains("、")) return false;
         
+        // 書式設定されたテキスト（**bold**, *italic*など）はヘッダーではない
+        if (text.Contains("**") || text.Contains("*") || text.Contains("_")) return false;
+        
         // フォントサイズがベースより大きい
         var fontSizeRatio = current.FontSize / fontAnalysis.BaseFontSize;
-        if (fontSizeRatio < 1.05) return false;
+        if (fontSizeRatio < 1.1) return false; // 閾値を少し上げる
         
         // 前後の要素との関係を考慮
         bool hasSpaceBefore = previous == null || previous.Type != ElementType.Paragraph;
@@ -869,8 +892,8 @@ internal class PdfStructureAnalyzer
             return true;
         }
         
-        // フォントサイズが大きく、前後に空白がある場合
-        if (fontSizeRatio > 1.15 && (hasSpaceBefore || hasSpaceAfter))
+        // フォントサイズが十分に大きく、前後に空白がある場合
+        if (fontSizeRatio > 1.2 && (hasSpaceBefore || hasSpaceAfter))
         {
             return true;
         }
@@ -982,6 +1005,7 @@ public class FontAnalysis
 public class DocumentStructure
 {
     public List<DocumentElement> Elements { get; set; } = [];
+    public FontAnalysis FontAnalysis { get; set; } = new FontAnalysis();
 }
 
 public class DocumentElement
