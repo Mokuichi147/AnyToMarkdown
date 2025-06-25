@@ -1,70 +1,23 @@
+using System.Text.RegularExpressions;
+
 namespace AnyToMarkdown.Tests;
 
 public class MarkdownStructureAnalysis
 {
     public string FileName { get; set; } = string.Empty;
-    public List<string> OriginalHeaders { get; set; } = new();
-    public List<string> ConvertedHeaders { get; set; } = new();
-    public List<string> OriginalSections { get; set; } = new();
-    public List<string> ConvertedSections { get; set; } = new();
-    public List<string> OriginalTables { get; set; } = new();
-    public List<string> ConvertedTables { get; set; } = new();
-    public List<string> OriginalLists { get; set; } = new();
-    public List<string> ConvertedLists { get; set; } = new();
+    public List<string> OriginalHeaders { get; set; } = [];
+    public List<string> ConvertedHeaders { get; set; } = [];
+    public List<string> OriginalSections { get; set; } = [];
+    public List<string> ConvertedSections { get; set; } = [];
+    public List<string> OriginalTables { get; set; } = [];
+    public List<string> ConvertedTables { get; set; } = [];
+    public List<string> OriginalLists { get; set; } = [];
+    public List<string> ConvertedLists { get; set; } = [];
 }
 
 public class ConversionAccuracyTest
 {
-    private readonly string[] _testFiles = new[]
-    {
-        "test-basic",
-        "test-table", 
-        "test-complex",
-        "test-japanese",
-        "test-links",
-        "test-multiline-table",
-        "test-complex-table",
-        "test-nested-content",
-        "test-edge-cases"
-    };
 
-    [Fact]
-    public void PdfToMarkdownAccuracyTest()
-    {
-        // 生成されたPDFをマークダウンに変換
-        string pdfPath = "./Resources/test-generated.pdf";
-        Assert.True(File.Exists(pdfPath), $"Generated PDF file should exist at: {pdfPath}");
-        
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        Assert.NotEmpty(result.Text);
-        
-        // 結果をファイルに保存して確認できるようにする
-        string outputPath = "./test-output.md";
-        File.WriteAllText(outputPath, result.Text);
-        
-        // 基本的な構造要素が含まれているかチェック
-        Assert.Contains("テストドキュメント", result.Text);
-        Assert.Contains("はじめに", result.Text);
-        Assert.Contains("基本的なテキスト", result.Text);
-        Assert.Contains("テーブル", result.Text);
-        
-        // テーブル構造が保持されているかチェック
-        Assert.Contains("|", result.Text); // テーブルの区切り文字
-        
-        // 変換の警告を出力
-        if (result.Warnings.Count > 0)
-        {
-            foreach (var warning in result.Warnings)
-            {
-                Console.WriteLine($"Warning: {warning}");
-            }
-        }
-        
-        Console.WriteLine($"Conversion completed. Output length: {result.Text.Length} characters");
-        Console.WriteLine($"Warnings count: {result.Warnings.Count}");
-    }
 
     [Theory]
     [InlineData("test-basic")]
@@ -77,6 +30,7 @@ public class ConversionAccuracyTest
     [InlineData("test-scientific-paper")]
     [InlineData("test-financial-report")]
     [InlineData("test-mixed-content")]
+    [InlineData("test-comprehensive-markdown")]
     public void RoundTripConversionTest(string fileName)
     {
         // 元のMarkdownファイルを読み込み
@@ -119,7 +73,7 @@ public class ConversionAccuracyTest
         EvaluateStructuralSimilarity(analysis, fileName);
     }
 
-    private MarkdownStructureAnalysis AnalyzeMarkdownStructure(string original, string converted, string fileName)
+    private static MarkdownStructureAnalysis AnalyzeMarkdownStructure(string original, string converted, string fileName)
     {
         return new MarkdownStructureAnalysis
         {
@@ -139,31 +93,47 @@ public class ConversionAccuracyTest
     {
         var testResults = new List<(string TestName, bool Passed, string Details)>();
 
-        // 1. ヘッダー構造テスト - 厳密な基準
+        // 1. ヘッダー構造テスト
         var headerResult = EvaluateHeaderStructureAsTest(analysis);
         testResults.Add(("Header Structure", headerResult.Passed, headerResult.Details));
 
-        // 2. セクション構造テスト - 厳密な基準  
+        // 2. セクション構造テスト
         var sectionResult = EvaluateSectionStructureAsTest(analysis);
         testResults.Add(("Section Structure", sectionResult.Passed, sectionResult.Details));
 
-        // 3. テーブル構造テスト - 厳密な基準
+        // 3. テーブル構造テスト
         var tableResult = EvaluateTableStructureAsTest(analysis);
         testResults.Add(("Table Structure", tableResult.Passed, tableResult.Details));
 
-        // 4. リスト構造テスト - 厳密な基準
+        // 4. リスト構造テスト
         var listResult = EvaluateListStructureAsTest(analysis);
         testResults.Add(("List Structure", listResult.Passed, listResult.Details));
 
-        // 5. Markdown書式保持テスト - 厳密な基準
-        var formattingResult = EvaluateMarkdownFormattingAsTest(analysis);
-        testResults.Add(("Markdown Formatting", formattingResult.Passed, formattingResult.Details));
+        // 5. 強調記法テスト（太字・斜体）
+        var (emphasisPassed, emphasisDetails) = EvaluateEmphasisAsTest(analysis);
+        testResults.Add(("Emphasis (Bold/Italic)", emphasisPassed, emphasisDetails));
+
+        // 6. リンク記法テスト
+        var (linkPassed, linkDetails) = EvaluateLinksAsTest(analysis);
+        testResults.Add(("Link Syntax", linkPassed, linkDetails));
+
+        // 7. コード記法テスト（インライン・ブロック）
+        var (codePassed, codeDetails) = EvaluateCodeAsTest(analysis);
+        testResults.Add(("Code Syntax", codePassed, codeDetails));
+
+        // 8. 引用記法テスト
+        var (quotePassed, quoteDetails) = EvaluateQuotesAsTest(analysis);
+        testResults.Add(("Quote Syntax", quotePassed, quoteDetails));
+
+        // 9. その他記法テスト（水平線・エスケープ）
+        var (otherPassed, otherDetails) = EvaluateOtherSyntaxAsTest(analysis);
+        testResults.Add(("Other Syntax", otherPassed, otherDetails));
 
         // 結果の表示
         int passedTests = 0;
         int totalTests = testResults.Count;
 
-        Console.WriteLine($"[{fileName}] Test Results:");
+        Console.WriteLine($"[{fileName}] Detailed Test Results:");
         foreach (var (testName, passed, details) in testResults)
         {
             string status = passed ? "PASS" : "FAIL";
@@ -174,31 +144,14 @@ public class ConversionAccuracyTest
         double passRate = (double)passedTests / totalTests * 100.0;
         Console.WriteLine($"[{fileName}] Overall pass rate: {passedTests}/{totalTests} ({passRate:F1}%)");
 
-        // 厳格な合格基準: 基本的なケースでは80%以上、複雑なケースでも60%以上が必要
-        double requiredPassRate = GetStrictPassRate(fileName);
+        // 厳格な基準: 全項目100%合格が必要
+        double requiredPassRate = 100.0;
         Assert.True(passRate >= requiredPassRate, 
             $"[{fileName}] Pass rate ({passRate:F1}%) below required threshold ({requiredPassRate:F1}%)");
     }
 
-    private double GetStrictPassRate(string fileName)
-    {
-        // 厳格な基準 - 条件を緩めない
-        return fileName switch
-        {
-            var f when f.Contains("basic") => 80.0,      // 基本的なケースは5項目中4項目以上
-            var f when f.Contains("table") && !f.Contains("complex") => 80.0,
-            var f when f.Contains("japanese") => 80.0,
-            var f when f.Contains("complex") => 60.0,    // 複雑なケースでも5項目中3項目以上
-            var f when f.Contains("multiline") => 60.0,
-            var f when f.Contains("advanced") => 60.0,
-            var f when f.Contains("scientific") => 60.0,
-            var f when f.Contains("financial") => 60.0,
-            var f when f.Contains("mixed") => 60.0,
-            _ => 80.0
-        };
-    }
 
-    private (bool Passed, string Details) EvaluateHeaderStructureAsTest(MarkdownStructureAnalysis analysis)
+    private static (bool Passed, string Details) EvaluateHeaderStructureAsTest(MarkdownStructureAnalysis analysis)
     {
         if (analysis.OriginalHeaders.Count == 0) 
             return (true, "No headers to validate");
@@ -247,7 +200,7 @@ public class ConversionAccuracyTest
         return (passed, details);
     }
 
-    private (bool Passed, string Details) EvaluateSectionStructureAsTest(MarkdownStructureAnalysis analysis)
+    private static (bool Passed, string Details) EvaluateSectionStructureAsTest(MarkdownStructureAnalysis analysis)
     {
         if (analysis.OriginalSections.Count <= 1) 
             return (true, "Single section document");
@@ -288,7 +241,7 @@ public class ConversionAccuracyTest
         return (passed, details);
     }
 
-    private (bool Passed, string Details) EvaluateTableStructureAsTest(MarkdownStructureAnalysis analysis)
+    private static (bool Passed, string Details) EvaluateTableStructureAsTest(MarkdownStructureAnalysis analysis)
     {
         if (analysis.OriginalTables.Count == 0) 
             return (true, "No tables to validate");
@@ -313,7 +266,7 @@ public class ConversionAccuracyTest
         return (passed, details);
     }
 
-    private (bool Passed, string Details) EvaluateListStructureAsTest(MarkdownStructureAnalysis analysis)
+    private static (bool Passed, string Details) EvaluateListStructureAsTest(MarkdownStructureAnalysis analysis)
     {
         if (analysis.OriginalLists.Count == 0) 
             return (true, "No lists to validate");
@@ -393,258 +346,194 @@ public class ConversionAccuracyTest
         return (passed, details);
     }
 
-    private double GetPassingThreshold(string fileName)
+    private static (bool Passed, string Details) EvaluateEmphasisAsTest(MarkdownStructureAnalysis analysis)
     {
-        // ファイルの複雑さに応じて合格基準を設定
-        return fileName switch
-        {
-            var f when f.Contains("basic") => 85.0,
-            var f when f.Contains("table") && !f.Contains("complex") => 75.0,
-            var f when f.Contains("complex") => 60.0,
-            var f when f.Contains("multiline") => 75.0,
-            var f when f.Contains("japanese") => 70.0,
-            var f when f.Contains("advanced") => 55.0,
-            var f when f.Contains("scientific") => 50.0,
-            var f when f.Contains("financial") => 50.0,
-            var f when f.Contains("mixed") => 45.0,
-            _ => 70.0
-        };
-    }
+        string originalContent = string.Join("\n", analysis.OriginalSections);
+        string convertedContent = string.Join("\n", analysis.ConvertedSections);
 
-    private double EvaluateHeaderStructure(MarkdownStructureAnalysis analysis)
-    {
-        if (analysis.OriginalHeaders.Count == 0) return 40.0; // ヘッダーがない場合は満点
+        int emphasisTests = 0;
+        int preservedEmphasis = 0;
 
-        int exactMatches = 0;  // 正確なMarkdownヘッダーとしてのマッチ
-        int partialMatches = 0; // テキストとしてのマッチ
-        int totalHeaders = analysis.OriginalHeaders.Count;
-
-        Console.WriteLine($"[DEBUG] Evaluating {totalHeaders} headers:");
-
-        foreach (var originalHeader in analysis.OriginalHeaders)
-        {
-            var headerText = ExtractHeaderText(originalHeader);
-            var headerLevel = GetHeaderLevel(originalHeader);
-            
-            Console.WriteLine($"[DEBUG] Looking for header: '{originalHeader}' (level {headerLevel}, text: '{headerText}')");
-
-            // 1. 正確なMarkdownヘッダーとしての一致（最高点）
-            bool exactLevelMatch = analysis.ConvertedHeaders.Any(h => 
-                GetHeaderLevel(h) == headerLevel && 
-                ExtractHeaderText(h).Equals(headerText, StringComparison.OrdinalIgnoreCase));
-
-            // 2. Markdownヘッダーとしての一致（レベル無視）
-            bool headerMatch = analysis.ConvertedHeaders.Any(h => 
-                ExtractHeaderText(h).Equals(headerText, StringComparison.OrdinalIgnoreCase));
-
-            // 3. テキストとしての存在確認（低い点数）
-            bool textExists = analysis.ConvertedSections.Any(s => 
-                s.Contains(headerText, StringComparison.OrdinalIgnoreCase));
-
-            if (exactLevelMatch)
-            {
-                exactMatches++;
-                Console.WriteLine($"[DEBUG] ✓ Exact level match found for '{headerText}'");
-            }
-            else if (headerMatch)
-            {
-                exactMatches++;
-                Console.WriteLine($"[DEBUG] ✓ Header match found for '{headerText}' (different level)");
-            }
-            else if (textExists)
-            {
-                partialMatches++;
-                Console.WriteLine($"[DEBUG] ○ Text match found for '{headerText}'");
-            }
-            else
-            {
-                Console.WriteLine($"[DEBUG] ✗ No match found for '{headerText}'");
-            }
-        }
-
-        // スコア計算：正確なマッチは2点、部分マッチは0.5点
-        double score = (exactMatches * 2.0 + partialMatches * 0.5) / (totalHeaders * 2.0) * 40.0;
-        Console.WriteLine($"[DEBUG] Header score: {exactMatches} exact + {partialMatches} partial = {score:F1}/40.0");
+        // 太字の保持確認（**と__）
+        var boldDoubleAsterisk = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
+        var boldDoubleUnderscore = System.Text.RegularExpressions.Regex.Matches(originalContent, @"__([^_]+)__");
         
-        return Math.Min(40.0, score);
-    }
-
-    private double EvaluateSectionStructure(MarkdownStructureAnalysis analysis)
-    {
-        if (analysis.OriginalSections.Count <= 1) return 30.0;
-
-        int matchedSections = 0;
-
-        foreach (var originalSection in analysis.OriginalSections)
+        if (boldDoubleAsterisk.Count > 0 || boldDoubleUnderscore.Count > 0)
         {
-            // 元のセクションから空行で区切られたブロックを抽出
-            var originalBlocks = ExtractContentBlocks(originalSection);
-            
-            foreach (var originalBlock in originalBlocks)
-            {
-                if (string.IsNullOrWhiteSpace(originalBlock)) continue;
-
-                // 変換されたセクションでマッチするブロックを探す
-                bool blockFound = false;
-                foreach (var convertedSection in analysis.ConvertedSections)
-                {
-                    var convertedBlocks = ExtractContentBlocks(convertedSection);
-                    
-                    foreach (var convertedBlock in convertedBlocks)
-                    {
-                        if (CalculateBlockSimilarity(originalBlock, convertedBlock) > 0.5)
-                        {
-                            blockFound = true;
-                            break;
-                        }
-                    }
-                    
-                    if (blockFound) break;
-                }
-                
-                if (blockFound)
-                {
-                    matchedSections++;
-                    break; // このセクションはマッチしたので次へ
-                }
-            }
+            emphasisTests++;
+            bool boldPreserved = convertedContent.Contains("**") || convertedContent.Contains("__");
+            if (boldPreserved) preservedEmphasis++;
         }
 
-        return (double)matchedSections / analysis.OriginalSections.Count * 30.0;
-    }
-
-    private double EvaluateTableStructure(MarkdownStructureAnalysis analysis)
-    {
-        if (analysis.OriginalTables.Count == 0) return 20.0;
-
-        int matchedTables = 0;
-
-        // 各オリジナルテーブルについて、変換後での存在を確認
-        foreach (var originalTable in analysis.OriginalTables)
+        // 斜体の保持確認（*と_）
+        var italicAsterisk = System.Text.RegularExpressions.Regex.Matches(originalContent, @"(?<!\*)\*([^*]+)\*(?!\*)");
+        var italicUnderscore = System.Text.RegularExpressions.Regex.Matches(originalContent, @"(?<!_)_([^_]+)_(?!_)");
+        
+        if (italicAsterisk.Count > 0 || italicUnderscore.Count > 0)
         {
-            var originalTableContent = ExtractTableContentWords(originalTable);
-            bool tableMatched = false;
-
-            // 1. 直接的なMarkdownテーブルとしての検出
-            if (analysis.ConvertedTables.Any(convertedTable =>
-                CalculateTableContentSimilarity(originalTableContent, ExtractTableContentWords(convertedTable)) > 0.3))
-            {
-                tableMatched = true;
-            }
-
-            // 2. セクション内での表形式データとしての検出
-            if (!tableMatched)
-            {
-                foreach (var section in analysis.ConvertedSections)
-                {
-                    if (HasTabularData(section) && 
-                        CalculateTableContentSimilarity(originalTableContent, ExtractTableContentWords(section)) > 0.2)
-                    {
-                        tableMatched = true;
-                        break;
-                    }
-                }
-            }
-
-            // 3. 表の内容がテキストとして保持されているかの確認
-            if (!tableMatched)
-            {
-                var allConvertedText = string.Join(" ", analysis.ConvertedSections);
-                int preservedContentCount = 0;
-                foreach (var word in originalTableContent)
-                {
-                    if (allConvertedText.Contains(word, StringComparison.OrdinalIgnoreCase))
-                    {
-                        preservedContentCount++;
-                    }
-                }
-                
-                if (originalTableContent.Count > 0 && 
-                    (double)preservedContentCount / originalTableContent.Count > 0.5)
-                {
-                    tableMatched = true;
-                }
-            }
-
-            if (tableMatched)
-            {
-                matchedTables++;
-            }
+            emphasisTests++;
+            bool italicPreserved = convertedContent.Contains("*") || convertedContent.Contains("_");
+            if (italicPreserved) preservedEmphasis++;
         }
 
-        return (double)matchedTables / analysis.OriginalTables.Count * 20.0;
-    }
-
-    private double EvaluateListStructure(MarkdownStructureAnalysis analysis)
-    {
-        if (analysis.OriginalLists.Count == 0) return 10.0;
-
-        int matchedLists = 0;
-
-        foreach (var originalList in analysis.OriginalLists)
+        // 太字斜体の保持確認（***と___）
+        var boldItalicTripleAsterisk = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\*\*\*([^*]+)\*\*\*");
+        var boldItalicTripleUnderscore = System.Text.RegularExpressions.Regex.Matches(originalContent, @"___([^_]+)___");
+        
+        if (boldItalicTripleAsterisk.Count > 0 || boldItalicTripleUnderscore.Count > 0)
         {
-            var originalListItems = ExtractListItems(originalList);
-            bool listMatched = false;
-
-            // 1. 直接的なMarkdownリストとしての検出
-            if (analysis.ConvertedLists.Any(convertedList =>
-                CalculateListSimilarity(originalListItems, ExtractListItems(convertedList)) > 0.3))
-            {
-                listMatched = true;
-            }
-
-            // 2. セクション内での箇条書き的表現の検出
-            if (!listMatched)
-            {
-                foreach (var section in analysis.ConvertedSections)
-                {
-                    if (HasListLikeStructure(section) &&
-                        CalculateListSimilarity(originalListItems, ExtractListItemsFromText(section)) > 0.3)
-                    {
-                        listMatched = true;
-                        break;
-                    }
-                }
-            }
-
-            // 3. リスト項目のテキストが何らかの形で保持されているかの確認
-            if (!listMatched)
-            {
-                var allConvertedText = string.Join(" ", analysis.ConvertedSections);
-                int preservedItemsCount = 0;
-                foreach (var item in originalListItems)
-                {
-                    if (allConvertedText.Contains(item, StringComparison.OrdinalIgnoreCase))
-                    {
-                        preservedItemsCount++;
-                    }
-                }
-
-                if (originalListItems.Count > 0 && 
-                    (double)preservedItemsCount / originalListItems.Count > 0.5)
-                {
-                    listMatched = true;
-                }
-            }
-
-            if (listMatched)
-            {
-                matchedLists++;
-            }
+            emphasisTests++;
+            bool boldItalicPreserved = convertedContent.Contains("***") || convertedContent.Contains("___");
+            if (boldItalicPreserved) preservedEmphasis++;
         }
 
-        return (double)matchedLists / analysis.OriginalLists.Count * 10.0;
+        if (emphasisTests == 0)
+            return (true, "No emphasis to validate");
+
+        bool passed = preservedEmphasis == emphasisTests;
+        string details = $"{preservedEmphasis}/{emphasisTests} emphasis types preserved";
+        
+        return (passed, details);
     }
 
-    private List<string> ExtractHeaders(string content)
+    private static (bool Passed, string Details) EvaluateLinksAsTest(MarkdownStructureAnalysis analysis)
+    {
+        string originalContent = string.Join("\n", analysis.OriginalSections);
+        string convertedContent = string.Join("\n", analysis.ConvertedSections);
+
+        int linkTests = 0;
+        int preservedLinks = 0;
+
+        // インラインリンクの保持確認
+        var inlineLinks = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\[([^\]]+)\]\(([^)]+)\)");
+        if (inlineLinks.Count > 0)
+        {
+            linkTests++;
+            bool inlineLinksPreserved = convertedContent.Contains("[") && convertedContent.Contains("](");
+            if (inlineLinksPreserved) preservedLinks++;
+        }
+
+        // 自動リンクの保持確認
+        var autoLinks = System.Text.RegularExpressions.Regex.Matches(originalContent, @"<(https?://[^>]+)>");
+        if (autoLinks.Count > 0)
+        {
+            linkTests++;
+            bool autoLinksPreserved = convertedContent.Contains("<http") || 
+                                    autoLinks.Cast<System.Text.RegularExpressions.Match>()
+                                    .Any(match => convertedContent.Contains(match.Groups[1].Value));
+            if (autoLinksPreserved) preservedLinks++;
+        }
+
+        if (linkTests == 0)
+            return (true, "No links to validate");
+
+        bool passed = preservedLinks == linkTests;
+        string details = $"{preservedLinks}/{linkTests} link types preserved";
+        
+        return (passed, details);
+    }
+
+    private static (bool Passed, string Details) EvaluateCodeAsTest(MarkdownStructureAnalysis analysis)
+    {
+        string originalContent = string.Join("\n", analysis.OriginalSections);
+        string convertedContent = string.Join("\n", analysis.ConvertedSections);
+
+        int codeTests = 0;
+        int preservedCode = 0;
+
+        // インラインコードの保持確認
+        var inlineCode = System.Text.RegularExpressions.Regex.Matches(originalContent, @"`([^`]+)`");
+        if (inlineCode.Count > 0)
+        {
+            codeTests++;
+            bool inlineCodePreserved = convertedContent.Contains("`");
+            if (inlineCodePreserved) preservedCode++;
+        }
+
+        // コードブロックの保持確認
+        var codeBlocks = System.Text.RegularExpressions.Regex.Matches(originalContent, @"```[^`]*```", System.Text.RegularExpressions.RegexOptions.Singleline);
+        if (codeBlocks.Count > 0)
+        {
+            codeTests++;
+            bool codeBlocksPreserved = convertedContent.Contains("```");
+            if (codeBlocksPreserved) preservedCode++;
+        }
+
+        if (codeTests == 0)
+            return (true, "No code to validate");
+
+        bool passed = preservedCode == codeTests;
+        string details = $"{preservedCode}/{codeTests} code types preserved";
+        
+        return (passed, details);
+    }
+
+    private static (bool Passed, string Details) EvaluateQuotesAsTest(MarkdownStructureAnalysis analysis)
+    {
+        string originalContent = string.Join("\n", analysis.OriginalSections);
+        string convertedContent = string.Join("\n", analysis.ConvertedSections);
+
+        int quoteTests = 0;
+        int preservedQuotes = 0;
+
+        // 引用の保持確認
+        var quotes = System.Text.RegularExpressions.Regex.Matches(originalContent, @"^>.*$", System.Text.RegularExpressions.RegexOptions.Multiline);
+        if (quotes.Count > 0)
+        {
+            quoteTests++;
+            bool quotesPreserved = convertedContent.Contains(">");
+            if (quotesPreserved) preservedQuotes++;
+        }
+
+        if (quoteTests == 0)
+            return (true, "No quotes to validate");
+
+        bool passed = preservedQuotes == quoteTests;
+        string details = $"{preservedQuotes}/{quoteTests} quote types preserved";
+        
+        return (passed, details);
+    }
+
+    private static (bool Passed, string Details) EvaluateOtherSyntaxAsTest(MarkdownStructureAnalysis analysis)
+    {
+        string originalContent = string.Join("\n", analysis.OriginalSections);
+        string convertedContent = string.Join("\n", analysis.ConvertedSections);
+
+        int otherTests = 0;
+        int preservedOther = 0;
+
+        // 水平線の保持確認
+        var horizontalRules = System.Text.RegularExpressions.Regex.Matches(originalContent, @"^(---+|\*\*\*+|___+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+        if (horizontalRules.Count > 0)
+        {
+            otherTests++;
+            bool horizontalRulesPreserved = convertedContent.Contains("---") || convertedContent.Contains("***") || convertedContent.Contains("___");
+            if (horizontalRulesPreserved) preservedOther++;
+        }
+
+        if (otherTests == 0)
+            return (true, "No other syntax to validate");
+
+        bool passed = preservedOther == otherTests;
+        string details = $"{preservedOther}/{otherTests} other syntax types preserved";
+        
+        return (passed, details);
+    }
+
+
+
+
+
+
+    private static List<string> ExtractHeaders(string content)
     {
         return content.Split('\n')
-            .Where(line => line.TrimStart().StartsWith("#"))
+            .Where(line => line.TrimStart().StartsWith('#'))
             .Select(line => line.Trim())
             .ToList();
     }
 
-    private List<string> ExtractSections(string content)
+    private static List<string> ExtractSections(string content)
     {
         var lines = content.Split('\n');
         var sections = new List<string>();
@@ -652,7 +541,7 @@ public class ConversionAccuracyTest
 
         foreach (var line in lines)
         {
-            if (line.TrimStart().StartsWith("#") && currentSection.Count > 0)
+            if (line.TrimStart().StartsWith('#') && currentSection.Count > 0)
             {
                 sections.Add(string.Join("\n", currentSection));
                 currentSection.Clear();
@@ -668,7 +557,7 @@ public class ConversionAccuracyTest
         return sections;
     }
 
-    private List<string> ExtractTables(string content)
+    private static List<string> ExtractTables(string content)
     {
         var lines = content.Split('\n');
         var tables = new List<string>();
@@ -677,7 +566,7 @@ public class ConversionAccuracyTest
 
         foreach (var line in lines)
         {
-            if (line.Contains("|"))
+            if (line.Contains('|'))
             {
                 inTable = true;
                 currentTable.Add(line);
@@ -705,7 +594,7 @@ public class ConversionAccuracyTest
         return tables;
     }
 
-    private List<string> ExtractLists(string content)
+    private static List<string> ExtractLists(string content)
     {
         var lines = content.Split('\n');
         var lists = new List<string>();
@@ -715,7 +604,7 @@ public class ConversionAccuracyTest
         foreach (var line in lines)
         {
             var trimmed = line.TrimStart();
-            if (trimmed.StartsWith("-") || trimmed.StartsWith("*") || trimmed.StartsWith("+") ||
+            if (trimmed.StartsWith('-') || trimmed.StartsWith('*') || trimmed.StartsWith('+') ||
                 (trimmed.Length > 2 && char.IsDigit(trimmed[0]) && trimmed[1] == '.'))
             {
                 inList = true;
@@ -730,7 +619,7 @@ public class ConversionAccuracyTest
                 }
                 inList = false;
             }
-            else if (inList && (trimmed.StartsWith(" ") || trimmed.StartsWith("\t")))
+            else if (inList && (trimmed.StartsWith(' ') || trimmed.StartsWith('\t')))
             {
                 currentList.Add(line);
             }
@@ -753,17 +642,17 @@ public class ConversionAccuracyTest
         return lists;
     }
 
-    private string ExtractHeaderText(string header)
+    private static string ExtractHeaderText(string header)
     {
         return header.Replace("#", "").Trim();
     }
 
-    private int GetHeaderLevel(string header)
+    private static int GetHeaderLevel(string header)
     {
         return header.TakeWhile(c => c == '#').Count();
     }
 
-    private double CalculateTextSimilarity(string text1, string text2)
+    private static double CalculateTextSimilarity(string text1, string text2)
     {
         if (string.IsNullOrEmpty(text1) || string.IsNullOrEmpty(text2))
             return 0.0;
@@ -779,7 +668,7 @@ public class ConversionAccuracyTest
         return union == 0 ? 0.0 : (double)intersection / union;
     }
 
-    private bool HasTabularData(string content)
+    private static bool HasTabularData(string content)
     {
         // テーブル的な構造を示すパターンを検索
         var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -800,7 +689,7 @@ public class ConversionAccuracyTest
         return tabularLines >= 3;
     }
 
-    private List<string> ExtractTableContentWords(string tableContent)
+    private static List<string> ExtractTableContentWords(string tableContent)
     {
         var words = new List<string>();
         var lines = tableContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -819,7 +708,7 @@ public class ConversionAccuracyTest
         return words.Distinct().ToList();
     }
 
-    private double CalculateTableContentSimilarity(List<string> content1, List<string> content2)
+    private static double CalculateTableContentSimilarity(List<string> content1, List<string> content2)
     {
         if (content1.Count == 0 || content2.Count == 0)
             return 0.0;
@@ -833,7 +722,7 @@ public class ConversionAccuracyTest
         return union == 0 ? 0.0 : (double)intersection / union;
     }
 
-    private List<string> ExtractListItems(string listContent)
+    private static List<string> ExtractListItems(string listContent)
     {
         var items = new List<string>();
         var lines = listContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -841,11 +730,11 @@ public class ConversionAccuracyTest
         foreach (var line in lines)
         {
             var trimmed = line.TrimStart();
-            if (trimmed.StartsWith("-") || trimmed.StartsWith("*") || trimmed.StartsWith("+") ||
+            if (trimmed.StartsWith('-') || trimmed.StartsWith('*') || trimmed.StartsWith('+') ||
                 (trimmed.Length > 2 && char.IsDigit(trimmed[0]) && trimmed[1] == '.'))
             {
                 // リストマーカーを除去してアイテムテキストを抽出
-                var itemText = trimmed.Substring(trimmed.IndexOfAny(new char[] { ' ', '\t' }) + 1).Trim();
+                var itemText = trimmed[(trimmed.IndexOfAny([' ', '\t']) + 1)..].Trim();
                 if (!string.IsNullOrEmpty(itemText))
                 {
                     items.Add(itemText);
@@ -856,7 +745,7 @@ public class ConversionAccuracyTest
         return items;
     }
 
-    private List<string> ExtractListItemsFromText(string text)
+    private static List<string> ExtractListItemsFromText(string text)
     {
         var items = new List<string>();
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -865,7 +754,7 @@ public class ConversionAccuracyTest
         {
             var trimmed = line.Trim();
             // 箇条書き的なパターンを検出
-            if (trimmed.StartsWith("•") || trimmed.StartsWith("◦") || trimmed.StartsWith("▪"))
+            if (trimmed.StartsWith('•') || trimmed.StartsWith('◦') || trimmed.StartsWith('▪'))
             {
                 var itemText = trimmed.Substring(1).Trim();
                 if (!string.IsNullOrEmpty(itemText))
@@ -878,7 +767,7 @@ public class ConversionAccuracyTest
         return items;
     }
 
-    private bool HasListLikeStructure(string text)
+    private static bool HasListLikeStructure(string text)
     {
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         int listLikeLines = 0;
@@ -886,8 +775,8 @@ public class ConversionAccuracyTest
         foreach (var line in lines)
         {
             var trimmed = line.Trim();
-            if (trimmed.StartsWith("•") || trimmed.StartsWith("◦") || trimmed.StartsWith("▪") ||
-                trimmed.StartsWith("-") || trimmed.StartsWith("*") || trimmed.StartsWith("+"))
+            if (trimmed.StartsWith('•') || trimmed.StartsWith('◦') || trimmed.StartsWith('▪') ||
+                trimmed.StartsWith('-') || trimmed.StartsWith('*') || trimmed.StartsWith('+'))
             {
                 listLikeLines++;
             }
@@ -896,7 +785,7 @@ public class ConversionAccuracyTest
         return listLikeLines >= 2; // 2行以上の箇条書きがあればリスト的構造と判定
     }
 
-    private double CalculateListSimilarity(List<string> items1, List<string> items2)
+    private static double CalculateListSimilarity(List<string> items1, List<string> items2)
     {
         if (items1.Count == 0 || items2.Count == 0)
             return 0.0;
@@ -914,7 +803,7 @@ public class ConversionAccuracyTest
         return (double)matchedItems / Math.Max(items1.Count, items2.Count);
     }
 
-    private List<string> ExtractContentBlocks(string content)
+    private static List<string> ExtractContentBlocks(string content)
     {
         // 空行で分割してブロック単位に分ける
         var blocks = content.Split(new string[] { "\n\n", "\r\n\r\n" }, StringSplitOptions.RemoveEmptyEntries)
@@ -934,7 +823,7 @@ public class ConversionAccuracyTest
         return blocks;
     }
 
-    private double CalculateBlockSimilarity(string block1, string block2)
+    private static double CalculateBlockSimilarity(string block1, string block2)
     {
         if (string.IsNullOrWhiteSpace(block1) || string.IsNullOrWhiteSpace(block2))
             return 0.0;
@@ -955,7 +844,7 @@ public class ConversionAccuracyTest
         return CalculateTextSimilarity(cleanBlock1, cleanBlock2);
     }
 
-    private string CleanMarkdownForComparison(string text)
+    private static string CleanMarkdownForComparison(string text)
     {
         // Markdownの書式設定記号を除去
         return text.Replace("#", "")
@@ -969,187 +858,4 @@ public class ConversionAccuracyTest
                   .Trim();
     }
 
-    [Fact]
-    public void MultilineTableConversionTest()
-    {
-        string originalMdPath = "./Resources/test-multiline-table.md";
-        string pdfPath = "./Resources/test-multiline-table.pdf";
-        string convertedMdPath = "./test-multiline-output.md";
-
-        Assert.True(File.Exists(originalMdPath), $"Original markdown file should exist: {originalMdPath}");
-        
-        if (!File.Exists(pdfPath))
-        {
-            Assert.Fail($"PDF not found. Run: pandoc {originalMdPath} -o {pdfPath} --pdf-engine=xelatex -V CJKmainfont=\"Hiragino Sans\" -V mainfont=\"Hiragino Sans\"");
-        }
-
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        
-        // 変換結果をファイルに保存
-        File.WriteAllText(convertedMdPath, result.Text);
-        
-        // 元のMarkdownを読み込み
-        string originalContent = File.ReadAllText(originalMdPath);
-        
-        // 基本的な内容が保持されているかチェック
-        VerifyContentSimilarity(originalContent, result.Text, "test-multiline-table");
-        
-        Console.WriteLine($"Multiline table test completed. Warnings: {result.Warnings.Count}");
-    }
-
-    [Fact]
-    public void EmptyCellTableConversionTest()
-    {
-        string originalMdPath = "./Resources/test-complex-table.md";
-        string pdfPath = "./Resources/test-complex-table.pdf";
-        string convertedMdPath = "./test-empty-cell-output.md";
-
-        Assert.True(File.Exists(originalMdPath), $"Original markdown file should exist: {originalMdPath}");
-        
-        if (!File.Exists(pdfPath))
-        {
-            Assert.Fail($"PDF not found. Run: pandoc {originalMdPath} -o {pdfPath} --pdf-engine=xelatex -V CJKmainfont=\"Hiragino Sans\" -V mainfont=\"Hiragino Sans\"");
-        }
-
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        
-        // 変換結果をファイルに保存
-        File.WriteAllText(convertedMdPath, result.Text);
-        
-        // 元のMarkdownを読み込み
-        string originalContent = File.ReadAllText(originalMdPath);
-        
-        // 基本的な内容が保持されているかチェック
-        VerifyContentSimilarity(originalContent, result.Text, "test-complex-table");
-        
-        Console.WriteLine($"Empty cell table test completed. Warnings: {result.Warnings.Count}");
-    }
-
-    [Fact]
-    public void AdvancedDocumentConversionTest()
-    {
-        string originalMdPath = "./Resources/test-advanced-document.md";
-        string pdfPath = "./Resources/test-advanced-document.pdf";
-        string convertedMdPath = "./test-advanced-output.md";
-
-        Assert.True(File.Exists(originalMdPath), $"Original markdown file should exist: {originalMdPath}");
-        
-        if (!File.Exists(pdfPath))
-        {
-            Assert.Fail($"PDF not found. Run: pandoc {originalMdPath} -o {pdfPath} --pdf-engine=xelatex -V CJKmainfont=\"Hiragino Sans\" -V mainfont=\"Hiragino Sans\"");
-        }
-
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        Assert.NotEmpty(result.Text);
-        
-        // 変換結果をファイルに保存
-        File.WriteAllText(convertedMdPath, result.Text);
-        
-        // 元のMarkdownを読み込み
-        string originalContent = File.ReadAllText(originalMdPath);
-        
-        // 基本的な内容が保持されているかチェック
-        VerifyContentSimilarity(originalContent, result.Text, "test-advanced-document");
-        
-        Console.WriteLine($"Advanced document test completed. Length: {result.Text.Length}, Warnings: {result.Warnings.Count}");
-    }
-
-    [Fact]
-    public void ScientificPaperConversionTest()
-    {
-        string originalMdPath = "./Resources/test-scientific-paper.md";
-        string pdfPath = "./Resources/test-scientific-paper.pdf";
-        string convertedMdPath = "./test-scientific-output.md";
-
-        Assert.True(File.Exists(originalMdPath), $"Original markdown file should exist: {originalMdPath}");
-        
-        if (!File.Exists(pdfPath))
-        {
-            Assert.Fail($"PDF not found. Run: pandoc {originalMdPath} -o {pdfPath} --pdf-engine=xelatex -V CJKmainfont=\"Hiragino Sans\" -V mainfont=\"Hiragino Sans\"");
-        }
-
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        Assert.NotEmpty(result.Text);
-        
-        // 変換結果をファイルに保存
-        File.WriteAllText(convertedMdPath, result.Text);
-        
-        // 元のMarkdownを読み込み
-        string originalContent = File.ReadAllText(originalMdPath);
-        
-        // 基本的な内容が保持されているかチェック
-        VerifyContentSimilarity(originalContent, result.Text, "test-scientific-paper");
-        
-        Console.WriteLine($"Scientific paper test completed. Length: {result.Text.Length}, Warnings: {result.Warnings.Count}");
-    }
-
-    [Fact]
-    public void FinancialReportConversionTest()
-    {
-        string originalMdPath = "./Resources/test-financial-report.md";
-        string pdfPath = "./Resources/test-financial-report.pdf";
-        string convertedMdPath = "./test-financial-output.md";
-
-        Assert.True(File.Exists(originalMdPath), $"Original markdown file should exist: {originalMdPath}");
-        
-        if (!File.Exists(pdfPath))
-        {
-            Assert.Fail($"PDF not found. Run: pandoc {originalMdPath} -o {pdfPath} --pdf-engine=xelatex -V CJKmainfont=\"Hiragino Sans\" -V mainfont=\"Hiragino Sans\"");
-        }
-
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        Assert.NotEmpty(result.Text);
-        
-        // 変換結果をファイルに保存
-        File.WriteAllText(convertedMdPath, result.Text);
-        
-        // 元のMarkdownを読み込み
-        string originalContent = File.ReadAllText(originalMdPath);
-        
-        // 基本的な内容が保持されているかチェック
-        VerifyContentSimilarity(originalContent, result.Text, "test-financial-report");
-        
-        Console.WriteLine($"Financial report test completed. Length: {result.Text.Length}, Warnings: {result.Warnings.Count}");
-    }
-
-    [Fact]
-    public void MixedContentConversionTest()
-    {
-        string originalMdPath = "./Resources/test-mixed-content.md";
-        string pdfPath = "./Resources/test-mixed-content.pdf";
-        string convertedMdPath = "./test-mixed-output.md";
-
-        Assert.True(File.Exists(originalMdPath), $"Original markdown file should exist: {originalMdPath}");
-        
-        if (!File.Exists(pdfPath))
-        {
-            Assert.Fail($"PDF not found. Run: pandoc {originalMdPath} -o {pdfPath} --pdf-engine=xelatex -V CJKmainfont=\"Hiragino Sans\" -V mainfont=\"Hiragino Sans\"");
-        }
-
-        var result = AnyConverter.Convert(pdfPath);
-        
-        Assert.NotNull(result.Text);
-        Assert.NotEmpty(result.Text);
-        
-        // 変換結果をファイルに保存
-        File.WriteAllText(convertedMdPath, result.Text);
-        
-        // 元のMarkdownを読み込み
-        string originalContent = File.ReadAllText(originalMdPath);
-        
-        // 基本的な内容が保持されているかチェック
-        VerifyContentSimilarity(originalContent, result.Text, "test-mixed-content");
-        
-        Console.WriteLine($"Mixed content test completed. Length: {result.Text.Length}, Warnings: {result.Warnings.Count}");
-    }
 }
