@@ -10,24 +10,85 @@ internal static class MarkdownGenerator
         var sb = new StringBuilder();
         var elements = structure.Elements.Where(e => e.Type != ElementType.Empty).ToList();
         
-        for (int i = 0; i < elements.Count; i++)
+        // 段落の統合処理
+        var consolidatedElements = ConsolidateParagraphs(elements);
+        
+        for (int i = 0; i < consolidatedElements.Count; i++)
         {
-            var element = elements[i];
-            var markdown = ConvertElementToMarkdown(element, elements, i);
+            var element = consolidatedElements[i];
+            var markdown = ConvertElementToMarkdown(element, consolidatedElements, i);
             
             if (!string.IsNullOrWhiteSpace(markdown))
             {
                 sb.AppendLine(markdown);
                 
-                // ヘッダーの後に空行を追加
-                if (element.Type == ElementType.Header && i < elements.Count - 1)
+                // 要素間の適切な間隔を追加
+                if (i < consolidatedElements.Count - 1)
                 {
-                    sb.AppendLine();
+                    var nextElement = consolidatedElements[i + 1];
+                    
+                    // ヘッダーの後に空行を追加
+                    if (element.Type == ElementType.Header)
+                    {
+                        sb.AppendLine();
+                    }
+                    // 段落の後にテーブルやリストが来る場合も空行を追加
+                    else if (element.Type == ElementType.Paragraph && 
+                            (nextElement.Type == ElementType.TableRow || nextElement.Type == ElementType.ListItem))
+                    {
+                        sb.AppendLine();
+                    }
                 }
             }
         }
 
         return PostProcessMarkdown(sb.ToString());
+    }
+
+    private static List<DocumentElement> ConsolidateParagraphs(List<DocumentElement> elements)
+    {
+        var consolidated = new List<DocumentElement>();
+        
+        for (int i = 0; i < elements.Count; i++)
+        {
+            var current = elements[i];
+            
+            if (current.Type == ElementType.Paragraph)
+            {
+                var paragraphBuilder = new StringBuilder(current.Content);
+                var consolidatedWords = new List<Word>(current.Words);
+                
+                // 後続の段落要素を統合
+                int j = i + 1;
+                while (j < elements.Count && elements[j].Type == ElementType.Paragraph)
+                {
+                    var nextParagraph = elements[j];
+                    paragraphBuilder.Append(" ").Append(nextParagraph.Content);
+                    consolidatedWords.AddRange(nextParagraph.Words);
+                    j++;
+                }
+                
+                // 統合された段落要素を作成
+                var consolidatedElement = new DocumentElement
+                {
+                    Type = ElementType.Paragraph,
+                    Content = paragraphBuilder.ToString(),
+                    FontSize = current.FontSize,
+                    LeftMargin = current.LeftMargin,
+                    IsIndented = current.IsIndented,
+                    Words = consolidatedWords
+                };
+                
+                consolidated.Add(consolidatedElement);
+                i = j - 1; // 統合した要素数分進める
+            }
+            else
+            {
+                consolidated.Add(current);
+            }
+        }
+        
+        return consolidated;
     }
 
     private static string ConvertElementToMarkdown(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
@@ -532,6 +593,12 @@ internal static class MarkdownGenerator
             
             // 単独の数字行を除外（ページ番号など）
             if (trimmed.Length > 0 && trimmed.All(char.IsDigit) && trimmed.Length <= 3)
+            {
+                continue;
+            }
+            
+            // 非常に短い断片的なテキストを除外
+            if (trimmed.Length > 0 && trimmed.Length <= 2 && !trimmed.StartsWith("#"))
             {
                 continue;
             }
