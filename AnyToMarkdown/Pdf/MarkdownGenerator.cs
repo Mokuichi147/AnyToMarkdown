@@ -16,7 +16,7 @@ internal static class MarkdownGenerator
         for (int i = 0; i < consolidatedElements.Count; i++)
         {
             var element = consolidatedElements[i];
-            var markdown = ConvertElementToMarkdown(element, consolidatedElements, i);
+            var markdown = ConvertElementToMarkdown(element, consolidatedElements, i, structure.FontAnalysis);
             
             if (!string.IsNullOrWhiteSpace(markdown))
             {
@@ -91,11 +91,11 @@ internal static class MarkdownGenerator
         return consolidated;
     }
 
-    private static string ConvertElementToMarkdown(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
+    private static string ConvertElementToMarkdown(DocumentElement element, List<DocumentElement> allElements, int currentIndex, FontAnalysis fontAnalysis)
     {
         return element.Type switch
         {
-            ElementType.Header => ConvertHeader(element),
+            ElementType.Header => ConvertHeader(element, fontAnalysis),
             ElementType.ListItem => ConvertListItem(element),
             ElementType.TableRow => ConvertTableRow(element, allElements, currentIndex),
             ElementType.Paragraph => ConvertParagraph(element),
@@ -103,7 +103,7 @@ internal static class MarkdownGenerator
         };
     }
 
-    private static string ConvertHeader(DocumentElement element)
+    private static string ConvertHeader(DocumentElement element, FontAnalysis fontAnalysis)
     {
         var text = element.Content.Trim();
         
@@ -113,7 +113,7 @@ internal static class MarkdownGenerator
         // ヘッダーのフォーマットを除去してクリーンなテキストを取得
         var cleanText = StripMarkdownFormatting(text);
         
-        var level = DetermineHeaderLevel(element);
+        var level = DetermineHeaderLevel(element, fontAnalysis);
         var prefix = new string('#', level);
         
         return $"{prefix} {cleanText}";
@@ -130,7 +130,7 @@ internal static class MarkdownGenerator
         return text.Trim();
     }
 
-    private static int DetermineHeaderLevel(DocumentElement element)
+    private static int DetermineHeaderLevel(DocumentElement element, FontAnalysis fontAnalysis)
     {
         var text = element.Content.Trim();
         
@@ -148,11 +148,30 @@ internal static class MarkdownGenerator
             return Math.Min(parts.Length, 4);
         }
         
-        // フォントサイズベースの相対的判定
-        var fontSizeRatio = element.FontSize / 12.0; // 12ptを基準とする
-        if (fontSizeRatio > 1.5) return 1;
-        if (fontSizeRatio > 1.3) return 2;
-        if (fontSizeRatio > 1.1) return 3;
+        // フォント分析に基づく相対的なレベル判定
+        var fontSizeRatio = element.FontSize / fontAnalysis.BaseFontSize;
+        
+        // すべてのフォントサイズから相対的な位置を計算
+        var allSizes = fontAnalysis.AllFontSizes.Distinct().OrderByDescending(s => s).ToList();
+        if (allSizes.Count > 0)
+        {
+            var currentSizeRank = allSizes.IndexOf(element.FontSize);
+            if (currentSizeRank >= 0)
+            {
+                // フォントサイズの順位に基づいてレベルを決定
+                var normalizedRank = (double)currentSizeRank / Math.Max(allSizes.Count - 1, 1);
+                
+                if (normalizedRank <= 0.2) return 1;  // 上位20%
+                if (normalizedRank <= 0.4) return 2;  // 上位40%
+                if (normalizedRank <= 0.6) return 3;  // 上位60%
+                return 4;
+            }
+        }
+        
+        // フォールバック：フォントサイズ比に基づく判定
+        if (fontSizeRatio >= 1.3) return 1;
+        if (fontSizeRatio >= 1.2) return 2;
+        if (fontSizeRatio >= 1.1) return 3;
         
         return 4;
     }
@@ -600,6 +619,12 @@ internal static class MarkdownGenerator
             
             // 単独の数字行を除外（ページ番号など）
             if (trimmed.Length > 0 && trimmed.All(char.IsDigit) && trimmed.Length <= 3)
+            {
+                continue;
+            }
+            
+            // ヘッダー形式の単独数字も除外（# 1など）
+            if (System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^#{1,6}\s*\d{1,3}$"))
             {
                 continue;
             }
