@@ -300,37 +300,37 @@ public class ConversionAccuracyTest
         int preservedFormatting = 0;
 
         // 太字の保持確認 - 厳格な基準
-        var boldMatches = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
+        var boldMatches = Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
         if (boldMatches.Count > 0)
         {
             formattingTests++;
             // 厳格な基準: 太字がMarkdown記法として保持されているか、または視覚的に強調されているか
             bool boldPreserved = convertedContent.Contains("**") || // Markdown形式で保持
-                                boldMatches.Cast<System.Text.RegularExpressions.Match>()
+                                boldMatches.Cast<Match>()
                                 .All(match => convertedContent.Contains(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
             
             if (boldPreserved) preservedFormatting++;
         }
 
         // 斜体の保持確認 - 厳格な基準
-        var italicMatches = System.Text.RegularExpressions.Regex.Matches(originalContent, @"(?<!\*)\*([^*]+)\*(?!\*)");
+        var italicMatches = Regex.Matches(originalContent, @"(?<!\*)\*([^*]+)\*(?!\*)");
         if (italicMatches.Count > 0)
         {
             formattingTests++;
             bool italicPreserved = convertedContent.Contains("*") || // Markdown形式で保持
-                                 italicMatches.Cast<System.Text.RegularExpressions.Match>()
+                                 italicMatches.Cast<Match>()
                                  .All(match => convertedContent.Contains(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
             
             if (italicPreserved) preservedFormatting++;
         }
 
         // コードの保持確認 - 厳格な基準
-        var codeMatches = System.Text.RegularExpressions.Regex.Matches(originalContent, @"`([^`]+)`");
+        var codeMatches = Regex.Matches(originalContent, @"`([^`]+)`");
         if (codeMatches.Count > 0)
         {
             formattingTests++;
             bool codePreserved = convertedContent.Contains("`") || // Markdown形式で保持
-                               codeMatches.Cast<System.Text.RegularExpressions.Match>()
+                               codeMatches.Cast<Match>()
                                .All(match => convertedContent.Contains(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
             
             if (codePreserved) preservedFormatting++;
@@ -355,8 +355,8 @@ public class ConversionAccuracyTest
         int preservedEmphasis = 0;
 
         // 太字の保持確認（**と__）
-        var boldDoubleAsterisk = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
-        var boldDoubleUnderscore = System.Text.RegularExpressions.Regex.Matches(originalContent, @"__([^_]+)__");
+        var boldDoubleAsterisk = Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
+        var boldDoubleUnderscore = Regex.Matches(originalContent, @"__([^_]+)__");
         
         if (boldDoubleAsterisk.Count > 0 || boldDoubleUnderscore.Count > 0)
         {
@@ -366,8 +366,8 @@ public class ConversionAccuracyTest
         }
 
         // 斜体の保持確認（*と_）
-        var italicAsterisk = System.Text.RegularExpressions.Regex.Matches(originalContent, @"(?<!\*)\*([^*]+)\*(?!\*)");
-        var italicUnderscore = System.Text.RegularExpressions.Regex.Matches(originalContent, @"(?<!_)_([^_]+)_(?!_)");
+        var italicAsterisk = Regex.Matches(originalContent, @"(?<!\*)\*([^*]+)\*(?!\*)");
+        var italicUnderscore = Regex.Matches(originalContent, @"(?<!_)_([^_]+)_(?!_)");
         
         if (italicAsterisk.Count > 0 || italicUnderscore.Count > 0)
         {
@@ -377,8 +377,8 @@ public class ConversionAccuracyTest
         }
 
         // 太字斜体の保持確認（***と___）
-        var boldItalicTripleAsterisk = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\*\*\*([^*]+)\*\*\*");
-        var boldItalicTripleUnderscore = System.Text.RegularExpressions.Regex.Matches(originalContent, @"___([^_]+)___");
+        var boldItalicTripleAsterisk = Regex.Matches(originalContent, @"\*\*\*([^*]+)\*\*\*");
+        var boldItalicTripleUnderscore = Regex.Matches(originalContent, @"___([^_]+)___");
         
         if (boldItalicTripleAsterisk.Count > 0 || boldItalicTripleUnderscore.Count > 0)
         {
@@ -405,7 +405,7 @@ public class ConversionAccuracyTest
         int preservedLinks = 0;
 
         // インラインリンクの保持確認
-        var inlineLinks = System.Text.RegularExpressions.Regex.Matches(originalContent, @"\[([^\]]+)\]\(([^)]+)\)");
+        var inlineLinks = Regex.Matches(originalContent, @"\[([^\]]+)\]\(([^)]+)\)");
         if (inlineLinks.Count > 0)
         {
             linkTests++;
@@ -414,12 +414,12 @@ public class ConversionAccuracyTest
         }
 
         // 自動リンクの保持確認
-        var autoLinks = System.Text.RegularExpressions.Regex.Matches(originalContent, @"<(https?://[^>]+)>");
+        var autoLinks = Regex.Matches(originalContent, @"<(https?://[^>]+)>");
         if (autoLinks.Count > 0)
         {
             linkTests++;
             bool autoLinksPreserved = convertedContent.Contains("<http") || 
-                                    autoLinks.Cast<System.Text.RegularExpressions.Match>()
+                                    autoLinks.Cast<Match>()
                                     .Any(match => convertedContent.Contains(match.Groups[1].Value));
             if (autoLinksPreserved) preservedLinks++;
         }
@@ -442,7 +442,7 @@ public class ConversionAccuracyTest
         int preservedCode = 0;
 
         // インラインコードの保持確認
-        var inlineCode = System.Text.RegularExpressions.Regex.Matches(originalContent, @"`([^`]+)`");
+        var inlineCode = Regex.Matches(originalContent, @"`([^`]+)`");
         if (inlineCode.Count > 0)
         {
             codeTests++;
@@ -451,7 +451,7 @@ public class ConversionAccuracyTest
         }
 
         // コードブロックの保持確認
-        var codeBlocks = System.Text.RegularExpressions.Regex.Matches(originalContent, @"```[^`]*```", System.Text.RegularExpressions.RegexOptions.Singleline);
+        var codeBlocks = Regex.Matches(originalContent, @"```[^`]*```", RegexOptions.Singleline);
         if (codeBlocks.Count > 0)
         {
             codeTests++;
@@ -477,7 +477,7 @@ public class ConversionAccuracyTest
         int preservedQuotes = 0;
 
         // 引用の保持確認
-        var quotes = System.Text.RegularExpressions.Regex.Matches(originalContent, @"^>.*$", System.Text.RegularExpressions.RegexOptions.Multiline);
+        var quotes = Regex.Matches(originalContent, @"^>.*$", RegexOptions.Multiline);
         if (quotes.Count > 0)
         {
             quoteTests++;
@@ -503,7 +503,7 @@ public class ConversionAccuracyTest
         int preservedOther = 0;
 
         // 水平線の保持確認
-        var horizontalRules = System.Text.RegularExpressions.Regex.Matches(originalContent, @"^(---+|\*\*\*+|___+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+        var horizontalRules = Regex.Matches(originalContent, @"^(---+|\*\*\*+|___+)$", RegexOptions.Multiline);
         if (horizontalRules.Count > 0)
         {
             otherTests++;

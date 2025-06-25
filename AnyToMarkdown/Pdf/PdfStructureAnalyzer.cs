@@ -31,6 +31,9 @@ internal class PdfStructureAnalyzer
         // 後処理：図形情報と連続する行の構造パターンを分析してテーブルを検出
         elements = PostProcessTableDetection(elements, graphicsInfo);
         
+        // 後処理：コンテキスト情報を活用した要素分類の改善
+        elements = PostProcessElementClassification(elements, fontAnalysis);
+        
         documentStructure.Elements.AddRange(elements);
         return documentStructure;
     }
@@ -761,6 +764,179 @@ internal class PdfStructureAnalyzer
         return gridCells.FirstOrDefault(cell => 
             elementCenter.X >= cell.Left && elementCenter.X <= cell.Right &&
             elementCenter.Y >= cell.Bottom && elementCenter.Y <= cell.Top);
+    }
+
+    private static List<DocumentElement> PostProcessElementClassification(List<DocumentElement> elements, FontAnalysis fontAnalysis)
+    {
+        var result = new List<DocumentElement>(elements);
+        
+        // コンテキスト情報を使用して要素分類を改善
+        for (int i = 0; i < result.Count; i++)
+        {
+            var current = result[i];
+            var previous = i > 0 ? result[i - 1] : null;
+            var next = i < result.Count - 1 ? result[i + 1] : null;
+            
+            // 段落の継続性チェック
+            if (current.Type == ElementType.Paragraph && 
+                previous?.Type == ElementType.Paragraph &&
+                ShouldMergeParagraphs(previous, current))
+            {
+                // 段落を統合
+                previous.Content = previous.Content.Trim() + " " + current.Content.Trim();
+                previous.Words.AddRange(current.Words);
+                result.RemoveAt(i);
+                i--; // インデックス調整
+                continue;
+            }
+            
+            // ヘッダー分類の改善
+            if (current.Type == ElementType.Paragraph && 
+                CouldBeHeader(current, previous, next, fontAnalysis))
+            {
+                current.Type = ElementType.Header;
+            }
+            
+            // リストアイテムの継続性チェック
+            if (current.Type == ElementType.Paragraph &&
+                previous?.Type == ElementType.ListItem &&
+                IsListContinuation(current, previous))
+            {
+                current.Type = ElementType.ListItem;
+            }
+            
+            // テーブル行の改善
+            if (current.Type == ElementType.Paragraph &&
+                IsPartOfTableSequence(current, result, i))
+            {
+                current.Type = ElementType.TableRow;
+            }
+        }
+        
+        return result;
+    }
+    
+    private static bool ShouldMergeParagraphs(DocumentElement previous, DocumentElement current)
+    {
+        var prevText = previous.Content.Trim();
+        var currText = current.Content.Trim();
+        
+        // フォントサイズが類似している
+        var fontSizeDiff = Math.Abs(previous.FontSize - current.FontSize);
+        if (fontSizeDiff > 2.0) return false;
+        
+        // インデント状況が類似している
+        var indentDiff = Math.Abs(previous.LeftMargin - current.LeftMargin);
+        if (indentDiff > 10.0) return false;
+        
+        // 前の段落が文で終わっていない（継続の可能性）
+        if (!prevText.EndsWith("。") && !prevText.EndsWith(".") && 
+            !prevText.EndsWith("!") && !prevText.EndsWith("?"))
+        {
+            return true;
+        }
+        
+        // 現在の段落が小文字や続きを示す語句で始まる
+        if (currText.StartsWith("と") || currText.StartsWith("が") || 
+            currText.StartsWith("で") || currText.StartsWith("に"))
+        {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private static bool CouldBeHeader(DocumentElement current, DocumentElement previous, DocumentElement next, FontAnalysis fontAnalysis)
+    {
+        var text = current.Content.Trim();
+        
+        // 明らかにヘッダーではないパターンを除外
+        if (text.EndsWith("。") || text.EndsWith(".") || text.Contains("、")) return false;
+        
+        // フォントサイズがベースより大きい
+        var fontSizeRatio = current.FontSize / fontAnalysis.BaseFontSize;
+        if (fontSizeRatio < 1.05) return false;
+        
+        // 前後の要素との関係を考慮
+        bool hasSpaceBefore = previous == null || previous.Type != ElementType.Paragraph;
+        bool hasSpaceAfter = next == null || next.Type != ElementType.Paragraph;
+        
+        // ヘッダー的なパターン
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+\.\s*\w+") || // "1. 概要"
+            System.Text.RegularExpressions.Regex.IsMatch(text, @"^第\d+章") ||     // "第1章"
+            System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+\s*[-－]\s*\w+")) // "1 - 概要"
+        {
+            return true;
+        }
+        
+        // フォントサイズが大きく、前後に空白がある場合
+        if (fontSizeRatio > 1.15 && (hasSpaceBefore || hasSpaceAfter))
+        {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private static bool IsListContinuation(DocumentElement current, DocumentElement previous)
+    {
+        var currText = current.Content.Trim();
+        var prevText = previous.Content.Trim();
+        
+        // インデントが類似している
+        var indentDiff = Math.Abs(current.LeftMargin - previous.LeftMargin);
+        if (indentDiff > 15.0) return false;
+        
+        // 前のリストアイテムが完了していない
+        if (!prevText.EndsWith("。") && !prevText.EndsWith("."))
+        {
+            return true;
+        }
+        
+        // 継続を示す語句で始まる
+        if (currText.StartsWith("また") || currText.StartsWith("さらに") ||
+            currText.StartsWith("ただし") || currText.StartsWith("なお"))
+        {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private static bool IsPartOfTableSequence(DocumentElement current, List<DocumentElement> allElements, int currentIndex)
+    {
+        // 前後にテーブル行がある場合
+        var hasPrevTable = currentIndex > 0 && allElements[currentIndex - 1].Type == ElementType.TableRow;
+        var hasNextTable = currentIndex < allElements.Count - 1 && allElements[currentIndex + 1].Type == ElementType.TableRow;
+        
+        if (!hasPrevTable && !hasNextTable) return false;
+        
+        var text = current.Content.Trim();
+        
+        // テーブル行っぽい特徴
+        var parts = text.Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return false;
+        
+        // 数値が多い
+        var numericParts = parts.Count(p => double.TryParse(p, out _) || 
+            p.Contains("%") || p.Contains(",") || p.Contains("¥") || p.Contains("$"));
+        
+        if ((double)numericParts / parts.Length > 0.3) return true;
+        
+        // 単語間のギャップパターンが一致する
+        if (current.Words != null && current.Words.Count >= 3)
+        {
+            var gaps = new List<double>();
+            for (int i = 1; i < current.Words.Count; i++)
+            {
+                gaps.Add(current.Words[i].BoundingBox.Left - current.Words[i-1].BoundingBox.Right);
+            }
+            
+            var largeGaps = gaps.Count(g => g > 15);
+            if (largeGaps >= 2) return true;
+        }
+        
+        return false;
     }
 }
 
