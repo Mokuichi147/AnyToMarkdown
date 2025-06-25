@@ -32,9 +32,9 @@ internal static class MarkdownGenerator
                     {
                         sb.AppendLine();
                     }
-                    // 段落の後にテーブルやリストが来る場合も空行を追加
+                    // 段落の後に別の段落、テーブル、リストが来る場合も空行を追加
                     else if (element.Type == ElementType.Paragraph && 
-                            (nextElement.Type == ElementType.TableRow || nextElement.Type == ElementType.ListItem))
+                            (nextElement.Type == ElementType.Paragraph || nextElement.Type == ElementType.TableRow || nextElement.Type == ElementType.ListItem))
                     {
                         sb.AppendLine();
                     }
@@ -58,11 +58,18 @@ internal static class MarkdownGenerator
                 var paragraphBuilder = new StringBuilder(current.Content);
                 var consolidatedWords = new List<Word>(current.Words);
                 
-                // 後続の段落要素を統合
+                // より慎重な段落統合：条件を満たす場合のみ統合
                 int j = i + 1;
                 while (j < elements.Count && elements[j].Type == ElementType.Paragraph)
                 {
                     var nextParagraph = elements[j];
+                    
+                    // 統合条件をチェック
+                    if (!ShouldConsolidateParagraphs(current, nextParagraph))
+                    {
+                        break;
+                    }
+                    
                     paragraphBuilder.Append(" ").Append(nextParagraph.Content);
                     consolidatedWords.AddRange(nextParagraph.Words);
                     j++;
@@ -89,6 +96,45 @@ internal static class MarkdownGenerator
         }
         
         return consolidated;
+    }
+    
+    private static bool ShouldConsolidateParagraphs(DocumentElement current, DocumentElement next)
+    {
+        // 書式設定が大きく異なる場合は統合しない
+        if (Math.Abs(current.FontSize - next.FontSize) > 1.0)
+        {
+            return false;
+        }
+        
+        // インデント状態が異なる場合は統合しない
+        if (current.IsIndented != next.IsIndented)
+        {
+            return false;
+        }
+        
+        // マージンが大きく異なる場合は統合しない
+        if (Math.Abs(current.LeftMargin - next.LeftMargin) > 10.0)
+        {
+            return false;
+        }
+        
+        // 書式設定マークを含む場合は慎重に判断
+        var currentText = current.Content.Trim();
+        var nextText = next.Content.Trim();
+        
+        // 現在の段落が完結している（句点で終わる）場合は統合しない
+        if (currentText.EndsWith("。") || currentText.EndsWith("."))
+        {
+            return false;
+        }
+        
+        // 次の段落が書式設定を含む場合は統合しない
+        if (nextText.Contains("**") || nextText.Contains("*") || nextText.Contains("_"))
+        {
+            return false;
+        }
+        
+        return true;
     }
 
     private static string ConvertElementToMarkdown(DocumentElement element, List<DocumentElement> allElements, int currentIndex, FontAnalysis fontAnalysis)

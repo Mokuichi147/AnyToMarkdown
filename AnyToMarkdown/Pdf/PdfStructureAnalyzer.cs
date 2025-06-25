@@ -401,17 +401,24 @@ internal class PdfStructureAnalyzer
                 formatting.IsBold = true;
             }
             
-            // 斜体判定：より包括的なパターン
+            // 斜体判定：より包括的で柔軟なパターン
             var italicPattern = @"(italic|oblique|slanted|cursive|emphasis|stress|kursiv)";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern))
             {
                 formatting.IsItalic = true;
             }
             
-            // フォント名に基づく追加判定 - より慎重な検出
+            // フォント名に基づく追加判定 - より幅広い検出
             if (fontName.Contains("-italic") || fontName.Contains("_italic") || 
                 fontName.EndsWith("-i") || fontName.EndsWith("_i") ||
-                fontName.Contains("-oblique") || fontName.Contains("_oblique"))
+                fontName.Contains("-oblique") || fontName.Contains("-slant") ||
+                fontName.Contains("italic") || fontName.Contains("oblique"))
+            {
+                formatting.IsItalic = true;
+            }
+            
+            // 日本語フォントの特殊なケース
+            if (fontName.Contains("斜体") || fontName.Contains("italics"))
             {
                 formatting.IsItalic = true;
             }
