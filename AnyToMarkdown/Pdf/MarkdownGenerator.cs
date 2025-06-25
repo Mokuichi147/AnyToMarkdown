@@ -49,10 +49,24 @@ internal static class MarkdownGenerator
         // 既にMarkdownヘッダーの場合はそのまま
         if (text.StartsWith("#")) return text;
         
+        // ヘッダーのフォーマットを除去してクリーンなテキストを取得
+        var cleanText = StripMarkdownFormatting(text);
+        
         var level = DetermineHeaderLevel(element);
         var prefix = new string('#', level);
         
-        return $"{prefix} {text}";
+        return $"{prefix} {cleanText}";
+    }
+    
+    private static string StripMarkdownFormatting(string text)
+    {
+        // 太字フォーマットを除去
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{1,3}([^*]+)\*{1,3}", "$1");
+        
+        // 斜体フォーマットを除去  
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"_([^_]+)_", "$1");
+        
+        return text.Trim();
     }
 
     private static int DetermineHeaderLevel(DocumentElement element)
@@ -153,7 +167,7 @@ internal static class MarkdownGenerator
         var maxColumns = 0;
         var allCells = new List<List<string>>();
 
-        // 各行をセルに分割
+        // 各行をセルに分割（基本的な処理に戻す）
         foreach (var row in tableRows)
         {
             var cells = ParseTableCells(row);
@@ -381,10 +395,116 @@ internal static class MarkdownGenerator
         // 連続する <br> タグを単一に統合
         cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"(<br>\s*){2,}", "<br>");
         
+        // 既存の <br> タグを保持
+        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br>\s*<br>", "<br>");
+        
+        // テーブル内で改行が必要な場合の代替表現も対応
+        // 長いテキストを自動的に改行に変換する
+        if (cellContent.Length > 50 && !cellContent.Contains("<br>"))
+        {
+            // 文の区切りで自動改行を検出
+            cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"([。！？])\s*([^\s])", "$1<br>$2");
+        }
+        
         // パイプ文字をエスケープ
         cellContent = cellContent.Replace("|", "\\|");
         
         return cellContent.Trim();
+    }
+    
+    private static List<List<string>> ProcessMultiRowCells(List<DocumentElement> tableRows)
+    {
+        var allCells = new List<List<string>>();
+        
+        foreach (var row in tableRows)
+        {
+            var cells = ParseTableCells(row);
+            allCells.Add(cells);
+        }
+        
+        if (allCells.Count <= 1) return allCells;
+        
+        // 複数行セルの検出と統合
+        var mergedCells = new List<List<string>>();
+        var i = 0;
+        
+        while (i < allCells.Count)
+        {
+            var currentRow = allCells[i];
+            var mergedRow = new List<string>(currentRow);
+            
+            // 次の行が現在の行と統合できるかチェック
+            if (i + 1 < allCells.Count)
+            {
+                var nextRow = allCells[i + 1];
+                
+                // セル数が一致しない、または明らかに別のテーブル行である場合は統合しない
+                if (ShouldMergeRows(currentRow, nextRow))
+                {
+                    // セルの内容を統合
+                    for (int j = 0; j < Math.Min(mergedRow.Count, nextRow.Count); j++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(nextRow[j]))
+                        {
+                            if (!string.IsNullOrWhiteSpace(mergedRow[j]))
+                            {
+                                mergedRow[j] += "<br>" + nextRow[j];
+                            }
+                            else
+                            {
+                                mergedRow[j] = nextRow[j];
+                            }
+                        }
+                    }
+                    i += 2; // 2行をスキップ
+                }
+                else
+                {
+                    i++;
+                }
+            }
+            else
+            {
+                i++;
+            }
+            
+            // 改行を含むセルを処理
+            for (int j = 0; j < mergedRow.Count; j++)
+            {
+                mergedRow[j] = ProcessMultiLineCell(mergedRow[j]);
+            }
+            
+            mergedCells.Add(mergedRow);
+        }
+        
+        return mergedCells;
+    }
+    
+    private static bool ShouldMergeRows(List<string> currentRow, List<string> nextRow)
+    {
+        // 基本的なヒューリスティック：
+        // 1. 次の行の最初のセルが空で、他のセルに内容がある場合は統合
+        // 2. 両方の行のセル数が同じで、次の行が明らかに継続内容の場合は統合
+        
+        if (nextRow.Count == 0) return false;
+        
+        // 次の行の最初のセルが空で、残りに内容がある場合（典型的な複数行セル）
+        if (string.IsNullOrWhiteSpace(nextRow[0]) && nextRow.Skip(1).Any(c => !string.IsNullOrWhiteSpace(c)))
+        {
+            return true;
+        }
+        
+        // セル数が一致し、次の行の内容が短い場合（継続行の可能性）
+        if (currentRow.Count == nextRow.Count)
+        {
+            var avgCurrentLength = currentRow.Where(c => !string.IsNullOrWhiteSpace(c)).Average(c => c.Length);
+            var avgNextLength = nextRow.Where(c => !string.IsNullOrWhiteSpace(c)).Average(c => c.Length);
+            
+            // 次の行の平均文字数が現在の行の半分以下の場合は継続行と判定
+            return avgNextLength < avgCurrentLength * 0.5;
+        }
+        
+        return false;
     }
 
     private static string PostProcessMarkdown(string markdown)

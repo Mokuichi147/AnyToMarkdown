@@ -65,7 +65,7 @@ internal class PdfStructureAnalyzer
 
         var mergedWords = PdfWordProcessor.MergeWordsInLine(line, horizontalTolerance);
         
-        // フォント情報を活用してMarkdown書式付きテキストを生成
+        // フォント検出機能付きのテキスト生成（完全な実装）
         var formattedText = BuildFormattedText(mergedWords);
 
         if (string.IsNullOrWhiteSpace(formattedText))
@@ -96,39 +96,56 @@ internal class PdfStructureAnalyzer
     private static ElementType DetermineElementType(string text, double avgFontSize, double maxFontSize, 
         FontAnalysis fontAnalysis, bool isIndented, List<Word> words)
     {
+        // フォーマット済みテキストから元のテキストを抽出
+        var cleanText = ExtractCleanTextForAnalysis(text);
+        
         // 明確なMarkdownパターン
-        if (text.StartsWith("#")) return ElementType.Header;
-        if (text.StartsWith("-") || text.StartsWith("*") || text.StartsWith("+")) return ElementType.ListItem;
-        if (text.StartsWith("・") || text.StartsWith("•")) return ElementType.ListItem;
+        if (cleanText.StartsWith("#")) return ElementType.Header;
+        if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return ElementType.ListItem;
+        if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return ElementType.ListItem;
 
         // リストアイテムの判定を最優先（数字付きリストを含む）
-        if (IsListItemLike(text)) return ElementType.ListItem;
+        if (IsListItemLike(cleanText)) return ElementType.ListItem;
 
-        // フォントサイズベースの判定
+        // フォントサイズベースの判定（ヘッダーを最優先）
         if (maxFontSize > fontAnalysis.LargeFontThreshold)
         {
             return ElementType.Header;
         }
         
         // 中程度のフォントサイズでもヘッダーの可能性
-        if (maxFontSize > fontAnalysis.BaseFontSize * 1.1 && IsHeaderLike(text))
+        if (maxFontSize > fontAnalysis.BaseFontSize * 1.1 && IsHeaderLike(cleanText))
         {
             return ElementType.Header;
         }
 
         // テーブル行の判定（座標とギャップベース）
-        if (IsTableRowLike(text, words)) return ElementType.TableRow;
+        if (IsTableRowLike(cleanText, words)) return ElementType.TableRow;
 
         // 位置ベースの判定
         if (isIndented)
         {
-            if (IsListItemLike(text)) return ElementType.ListItem;
+            if (IsListItemLike(cleanText)) return ElementType.ListItem;
         }
 
         // ヘッダーパターンの判定
-        if (IsHeaderLike(text)) return ElementType.Header;
+        if (IsHeaderLike(cleanText)) return ElementType.Header;
 
         return ElementType.Paragraph;
+    }
+    
+    private static string ExtractCleanTextForAnalysis(string text)
+    {
+        // Markdownフォーマットを除去してテキスト分析を行う
+        var cleanText = text;
+        
+        // 太字フォーマットを除去
+        cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"\*{1,3}([^*]+)\*{1,3}", "$1");
+        
+        // 斜体フォーマットを除去  
+        cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"_([^_]+)_", "$1");
+        
+        return cleanText.Trim();
     }
 
     private static bool IsHeaderLike(string text)
@@ -232,6 +249,8 @@ internal class PdfStructureAnalyzer
     
     private static string BuildFormattedText(List<List<Word>> mergedWords)
     {
+        if (mergedWords.Count == 0) return "";
+        
         var result = new System.Text.StringBuilder();
         
         foreach (var wordGroup in mergedWords)
@@ -247,11 +266,42 @@ internal class PdfStructureAnalyzer
             // 書式を適用
             var formattedText = ApplyFormatting(groupText, formatting);
             
+            // スペースの追加 - 最初の単語でない場合のみ
             if (result.Length > 0) result.Append(" ");
             result.Append(formattedText);
         }
         
-        return result.ToString().Trim();
+        return result.ToString();
+    }
+    
+    private static string BuildFormattedTextSimple(List<List<Word>> mergedWords)
+    {
+        if (mergedWords.Count == 0) return "";
+        
+        var result = new System.Text.StringBuilder();
+        
+        foreach (var wordGroup in mergedWords)
+        {
+            if (wordGroup.Count == 0) continue;
+            
+            var groupText = string.Join("", wordGroup.Select(w => w.Text));
+            if (string.IsNullOrWhiteSpace(groupText)) continue;
+            
+            // 簡単なフォント検出 - 太字のみ
+            bool isBold = wordGroup.Any(w => 
+            {
+                var fontName = w.FontName?.ToLowerInvariant() ?? "";
+                return fontName.Contains("w5") || fontName.Contains("bold");
+            });
+            
+            // 太字の場合のみフォーマットを適用
+            var formattedText = isBold ? $"**{groupText}**" : groupText;
+            
+            if (result.Length > 0) result.Append(" ");
+            result.Append(formattedText);
+        }
+        
+        return result.ToString();
     }
     
     private static FontFormatting AnalyzeFontFormatting(List<Word> words)
@@ -262,27 +312,41 @@ internal class PdfStructureAnalyzer
         {
             var fontName = word.FontName?.ToLowerInvariant() ?? "";
             
-            // Debug: Print font names to understand what we're working with
-            if (!string.IsNullOrEmpty(fontName))
-            {
-                System.Console.WriteLine($"DEBUG: Word '{word.Text}' has font: '{fontName}'");
-            }
+            // 日本語PDFではイタリックがフォント名に反映されない場合が多い
+            // そのため、太字検出に重点を置く
             
-            // 太字の判定 - より広範囲のパターンを検出
-            if (fontName.Contains("bold") || fontName.Contains("black") || fontName.Contains("heavy") || 
-                fontName.Contains("medium") || fontName.Contains("semibold") || fontName.Contains("demi") ||
-                fontName.Contains("700") || fontName.Contains("800") || fontName.Contains("900"))
+            // Web調査に基づく汎用的なフォント命名パターン
+            
+            // 太字判定：PDF標準14フォント + 日本語フォント重み番号
+            // Times-Bold, Helvetica-Bold, Arial-Bold + 日本語フォント W3,W4,W5,W6,W7,W8,W9
+            var boldPattern = @"(-bold|-black|-heavy|-semibold|-demibold|-extrabold|-ultrabold|bold|black|heavy|semibold|demi|extra|ultra|[67890]00|,bold|,b|-w[3-9]|w[3-9]-|-pro.*w[3-9]|medium|regular-bold)";
+            if (System.Text.RegularExpressions.Regex.IsMatch(fontName, boldPattern))
             {
                 formatting.IsBold = true;
-                System.Console.WriteLine($"DEBUG: Detected BOLD for word '{word.Text}' with font '{fontName}'");
             }
             
-            // 斜体の判定
-            if (fontName.Contains("italic") || fontName.Contains("oblique") || fontName.Contains("slanted") ||
-                fontName.Contains("ital"))
+            // 斜体判定：PDF標準パターン + 日本語フォントパターン
+            // Times-Italic, Helvetica-Oblique, Arial-Italic + 日本語フォント斜体表現
+            // 日本語では: Yu Mincho Italic, Hiragino Sans Oblique, MS Gothic Slanted等
+            var italicPattern = @"(-italic|-oblique|-slanted|italic|oblique|slanted|cursive|,italic|,i|-ital|-obl|ital$|oblique$|slanted$|cursive$|inclined|slope)";
+            if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern))
             {
                 formatting.IsItalic = true;
-                System.Console.WriteLine($"DEBUG: Detected ITALIC for word '{word.Text}' with font '{fontName}'");
+            }
+            
+            // PostScriptフォント名のサブセットタグを除去して再判定
+            // 例: "EOODIA+Poetica-Bold" -> "Poetica-Bold"
+            var cleanedFontName = System.Text.RegularExpressions.Regex.Replace(fontName, @"^[A-Z]{6}\+", "");
+            if (cleanedFontName != fontName)
+            {
+                if (System.Text.RegularExpressions.Regex.IsMatch(cleanedFontName, boldPattern))
+                {
+                    formatting.IsBold = true;
+                }
+                if (System.Text.RegularExpressions.Regex.IsMatch(cleanedFontName, italicPattern))
+                {
+                    formatting.IsItalic = true;
+                }
             }
         }
         
