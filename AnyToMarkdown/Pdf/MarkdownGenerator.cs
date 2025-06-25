@@ -340,13 +340,20 @@ internal static class MarkdownGenerator
             return SplitTextIntoCells(text);
         }
 
-        // より適応的な閾値設定
+        // 改良された適応的閾値設定
         var avgGap = gaps.Average();
         var sortedGaps = gaps.OrderBy(g => g).ToList();
         var medianGap = sortedGaps[sortedGaps.Count / 2];
         
-        // 大きなギャップを特定するための閾値（より保守的に）
-        var threshold = Math.Max(avgGap * 1.8, Math.Max(medianGap * 1.5, 18));
+        // より正確な閾値計算：大きなギャップと小さなギャップを区別
+        var q75 = sortedGaps[(int)(sortedGaps.Count * 0.75)];
+        var q25 = sortedGaps[(int)(sortedGaps.Count * 0.25)];
+        var iqr = q75 - q25;
+        
+        // IQRベースの閾値またはメディアンベースの閾値の大きい方を使用
+        var iqrThreshold = q75 + (iqr * 0.5);
+        var medianThreshold = medianGap * 1.5;
+        var threshold = Math.Max(Math.Max(iqrThreshold, medianThreshold), 15);
 
         currentCell.Add(words[0]);
         

@@ -126,15 +126,23 @@ internal class PdfStructureAnalyzer
         // テーブル行の判定（座標とギャップベース）- ヘッダー判定より先に実行
         if (IsTableRowLike(cleanText, words)) return ElementType.TableRow;
 
-        // フォントサイズベースのヘッダー判定（より厳格に）
+        // フォントサイズベースのヘッダー判定（改良版）
         var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;
-        if (fontSizeRatio > 1.25 && !cleanText.EndsWith("。") && !cleanText.EndsWith("."))
+        
+        // 明らかに大きなフォントサイズの場合
+        if (fontSizeRatio > 1.2 && !cleanText.EndsWith("。") && !cleanText.EndsWith("."))
         {
             return ElementType.Header;
         }
         
-        // ヘッダーパターンの判定（フォントサイズが基準以上の場合のみ）
-        if (fontSizeRatio >= 1.05 && IsHeaderLike(cleanText))
+        // 中程度のフォントサイズでヘッダーパターンを持つ場合
+        if (fontSizeRatio >= 1.1 && IsHeaderLike(cleanText))
+        {
+            return ElementType.Header;
+        }
+        
+        // フォントサイズが小さくても明確なヘッダーパターンがある場合
+        if (fontSizeRatio >= 1.0 && IsStrongHeaderPattern(cleanText))
         {
             return ElementType.Header;
         }
@@ -177,6 +185,23 @@ internal class PdfStructureAnalyzer
         return false;
     }
 
+    private static bool IsStrongHeaderPattern(string text)
+    {
+        // 明確なMarkdownヘッダーパターン
+        if (text.StartsWith("#")) return true;
+        
+        // 数字のみの章番号パターン
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d{1,3}$")) return true;
+        
+        // 階層的な数字パターン (1.1, 1.1.1, 1.1.1.1)
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+(\.\d+){1,3}$")) return true;
+        
+        // 大文字のタイトル（英語）
+        if (text.All(c => char.IsUpper(c) || char.IsWhiteSpace(c) || char.IsDigit(c)) && text.Any(char.IsLetter)) return true;
+        
+        return false;
+    }
+
     private static bool IsListItemLike(string text)
     {
         text = text.Trim();
@@ -187,16 +212,16 @@ internal class PdfStructureAnalyzer
         if (text.StartsWith("-") || text.StartsWith("*") || text.StartsWith("+")) return true;
         
         // 数字付きリスト
-        if (text.Length > 2 && char.IsDigit(text[0]) && (text[1] == '.' || text[1] == ')')) return true;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+[\.\)]")) return true;
         
         // 括弧付き数字
-        if (text.Length > 3 && text[0] == '(' && char.IsDigit(text[1]) && text[2] == ')') return true;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\(\d+\)")) return true;
         
         // アルファベット付きリスト
-        if (text.Length > 2 && char.IsLetter(text[0]) && (text[1] == '.' || text[1] == ')')) return true;
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^[a-zA-Z][\.\)]")) return true;
         
         // Unicode数字記号（丸数字など）
-        if (text.Length > 0)
+        if (!string.IsNullOrEmpty(text))
         {
             var firstChar = text[0];
             if (firstChar >= '\u2460' && firstChar <= '\u2473') return true; // 丸数字
@@ -309,18 +334,24 @@ internal class PdfStructureAnalyzer
             // 日本語PDFではイタリックがフォント名に反映されない場合が多い
             // そのため、太字検出に重点を置く
             
-            // 汎用的なフォント検出パターン
+            // 改良されたフォント検出パターン
             
-            // 太字判定：一般的なパターンに絞る
-            var boldPattern = @"(bold|black|heavy|[6789]00)";
+            // 太字判定：より包括的なパターン
+            var boldPattern = @"(bold|black|heavy|semibold|demibold|medium|[6789]00|w[5-9])";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, boldPattern))
             {
                 formatting.IsBold = true;
             }
             
-            // 斜体判定：基本パターンのみ
-            var italicPattern = @"(italic|oblique|slanted)";
+            // 斜体判定：より包括的なパターン
+            var italicPattern = @"(italic|oblique|slanted|cursive)";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern))
+            {
+                formatting.IsItalic = true;
+            }
+            
+            // フォント名に基づく追加判定
+            if (fontName.Contains("emphasis") || fontName.Contains("stress"))
             {
                 formatting.IsItalic = true;
             }
@@ -511,12 +542,12 @@ internal class PdfStructureAnalyzer
     {
         var text = element.Content.Trim();
         
-        // 明らかにヘッダーではない短い行
-        if (text.Length < 100 && !text.EndsWith("。") && !text.EndsWith("."))
+        // 明らかにヘッダーではない行
+        if (!text.EndsWith("。") && !text.EndsWith("."))
         {
             // 複数の単語/要素に分かれている
             var parts = text.Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length >= 2 && parts.Length <= 10) // 2-10列が一般的
+            if (parts.Length >= 2) // 複数列のテーブル
             {
                 // 図形情報による補強判定
                 if (HasTableBoundaries(element, graphicsInfo))
