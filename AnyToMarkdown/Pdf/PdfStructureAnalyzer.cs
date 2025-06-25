@@ -299,21 +299,56 @@ internal class PdfStructureAnalyzer
         {
             if (wordGroup.Count == 0) continue;
             
-            var groupText = string.Join("", wordGroup.Select(w => w.Text));
-            if (string.IsNullOrWhiteSpace(groupText)) continue;
-            
-            // フォント情報から書式を判定
-            var formatting = AnalyzeFontFormatting(wordGroup);
-            
-            // 書式を適用
-            var formattedText = ApplyFormatting(groupText, formatting);
+            // 単語レベルでの書式設定を処理
+            var groupResult = BuildFormattedWordGroup(wordGroup);
+            if (string.IsNullOrWhiteSpace(groupResult)) continue;
             
             // スペースの追加 - 最初の単語でない場合のみ
             if (result.Length > 0) result.Append(" ");
-            result.Append(formattedText);
+            result.Append(groupResult);
         }
         
         return result.ToString();
+    }
+    
+    private static string BuildFormattedWordGroup(List<Word> wordGroup)
+    {
+        if (wordGroup.Count == 0) return "";
+        
+        var result = new System.Text.StringBuilder();
+        FontFormatting? currentFormatting = null;
+        var currentSegment = new System.Text.StringBuilder();
+        
+        foreach (var word in wordGroup)
+        {
+            var wordFormatting = AnalyzeFontFormatting([word]);
+            
+            // 書式が変わった場合、現在のセグメントを確定
+            if (currentFormatting != null && !FormattingEqual(currentFormatting, wordFormatting))
+            {
+                if (currentSegment.Length > 0)
+                {
+                    result.Append(ApplyFormatting(currentSegment.ToString(), currentFormatting));
+                    currentSegment.Clear();
+                }
+            }
+            
+            currentFormatting = wordFormatting;
+            currentSegment.Append(word.Text);
+        }
+        
+        // 最後のセグメントを処理
+        if (currentSegment.Length > 0 && currentFormatting != null)
+        {
+            result.Append(ApplyFormatting(currentSegment.ToString(), currentFormatting));
+        }
+        
+        return result.ToString();
+    }
+    
+    private static bool FormattingEqual(FontFormatting a, FontFormatting b)
+    {
+        return a.IsBold == b.IsBold && a.IsItalic == b.IsItalic;
     }
     
     private static string BuildFormattedTextSimple(List<List<Word>> mergedWords)
@@ -367,14 +402,16 @@ internal class PdfStructureAnalyzer
             }
             
             // 斜体判定：より包括的なパターン
-            var italicPattern = @"(italic|oblique|slanted|cursive)";
+            var italicPattern = @"(italic|oblique|slanted|cursive|emphasis|stress|kursiv)";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern))
             {
                 formatting.IsItalic = true;
             }
             
-            // フォント名に基づく追加判定
-            if (fontName.Contains("emphasis") || fontName.Contains("stress"))
+            // フォント名に基づく追加判定 - より慎重な検出
+            if (fontName.Contains("-italic") || fontName.Contains("_italic") || 
+                fontName.EndsWith("-i") || fontName.EndsWith("_i") ||
+                fontName.Contains("-oblique") || fontName.Contains("_oblique"))
             {
                 formatting.IsItalic = true;
             }
