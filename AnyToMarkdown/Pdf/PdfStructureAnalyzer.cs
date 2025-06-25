@@ -142,6 +142,19 @@ internal class PdfStructureAnalyzer
         if (cleanText.StartsWith("#")) return ElementType.Header;
         if (cleanText.StartsWith(">")) return ElementType.QuoteBlock;
         if (cleanText.StartsWith("```")) return ElementType.CodeBlock;
+        
+        // 太字フォーマットを含む数字パターンを最優先でヘッダーとして扱う
+        if (HasBoldNumberPattern(text))
+        {
+            return ElementType.Header;
+        }
+        
+        // 太字テキストで短い行の場合はヘッダーとして扱う
+        if (IsPotentialBoldHeader(text))
+        {
+            return ElementType.Header;
+        }
+        
         if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return ElementType.ListItem;
         if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return ElementType.ListItem;
 
@@ -174,6 +187,18 @@ internal class PdfStructureAnalyzer
         
         // フォントサイズが小さくても明確なヘッダーパターンがある場合
         if (fontSizeRatio >= 1.0 && IsStrongHeaderPattern(cleanText))
+        {
+            return ElementType.Header;
+        }
+        
+        // 太字フォーマットを含む数字パターンを強制的にヘッダーとして扱う
+        if (HasBoldNumberPattern(text))
+        {
+            return ElementType.Header;
+        }
+        
+        // 太字テキストで短い行の場合はヘッダーとして扱う
+        if (IsPotentialBoldHeader(text))
         {
             return ElementType.Header;
         }
@@ -370,6 +395,61 @@ internal class PdfStructureAnalyzer
         // 引用を示すフレーズ
         var quoteIndicators = new[] { "注意", "重要", "警告", "Note:", "Important:", "Warning:", "Tip:", "記:", "備考" };
         if (quoteIndicators.Any(indicator => text.StartsWith(indicator))) return true;
+        
+        return false;
+    }
+    
+    private static bool HasBoldNumberPattern(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        // **1.** **概要** や **1.1目的** のようなパターンを検出
+        var boldNumberPatterns = new[]
+        {
+            @"\*\*\d+\.\*\*\s*\*\*[^\*]+\*\*", // **1.** **概要**
+            @"\*\*\d+\.\d+[^\*]*\*\*",          // **1.1目的**
+            @"\*\*\d+\.\*\*\s*[^\*]+",          // **1.** 概要 (一部太字)
+            @"\*\*\d+\.\d+\*\*\s*[^\*]+",       // **1.1** システム要件
+            @"\*\*\d+\.\*\*",                   // **1.**
+            @"\*\*\d+\.\d+\*\*"                 // **1.1**
+        };
+        
+        return boldNumberPatterns.Any(pattern => 
+            System.Text.RegularExpressions.Regex.IsMatch(text, pattern));
+    }
+    
+    private static bool IsPotentialBoldHeader(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        // 太字を含むテキストをヘッダー候補とする（文字数に依存しない）
+        if (text.Contains("**"))
+        {
+            // リストアイテムのマーカーは除外
+            if (text.StartsWith("- ") || text.StartsWith("* ") || text.StartsWith("+ ")) return false;
+            
+            // 数字リストの項目は除外
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+\.\s*\*\*")) return false;
+            
+            // 完全な文（句点で終わる）は除外
+            var cleanText = text.Replace("**", "").Trim();
+            if (cleanText.EndsWith("。") || cleanText.EndsWith(".")) return false;
+            
+            // 日本語の項目マーカーは除外
+            if (cleanText.StartsWith("•") || cleanText.StartsWith("‒")) return false;
+            
+            // 数字パターンを含む太字テキストで、かつセクション番号形式
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\*\*\d+(\.\d+)*[\.\s]"))
+            {
+                return true;
+            }
+            
+            // 明確なセクションタイトルパターン（数字以外の見出し）
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\*\*[^\d\*\s][^\*]*\*\*$"))
+            {
+                return true;
+            }
+        }
         
         return false;
     }

@@ -169,11 +169,19 @@ internal static class MarkdownGenerator
     
     private static string StripMarkdownFormatting(string text)
     {
-        // 太字フォーマットを除去
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{1,3}([^*]+)\*{1,3}", "$1");
+        // 太字フォーマットを除去（複数回実行して入れ子や複数パターンを処理）
+        while (text.Contains("**") || text.Contains("*"))
+        {
+            var before = text;
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{1,3}([^*]*)\*{1,3}", "$1");
+            if (before == text) break; // 変化がなければ終了
+        }
         
         // 斜体フォーマットを除去  
         text = System.Text.RegularExpressions.Regex.Replace(text, @"_([^_]+)_", "$1");
+        
+        // 余分なスペースを統合
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
         
         return text.Trim();
     }
