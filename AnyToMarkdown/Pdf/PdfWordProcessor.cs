@@ -20,9 +20,14 @@ internal static class PdfWordProcessor
             {
                 var line = lines[i];
                 var avgBottom = line.Select(x => x.BoundingBox.Bottom).Average();
+                var avgTop = line.Select(x => x.BoundingBox.Top).Average();
+                var lineHeight = avgTop - avgBottom;
+                
+                // 単語のベースラインと行のベースラインの距離
                 var distance = Math.Abs(word.BoundingBox.Bottom - avgBottom);
                 
-                if (distance < yThreshold && distance < bestMatch)
+                // 行の高さの半分以内で、最も近い行を選択
+                if (distance <= Math.Max(yThreshold, lineHeight / 2) && distance < bestMatch)
                 {
                     bestMatch = distance;
                     bestLineIndex = i;
@@ -61,21 +66,27 @@ internal static class PdfWordProcessor
         }
 
         var mergedWords = new List<List<Word>>();
+        
         for (int i = 0; i < words.Count; i++)
         {
             if (mergedWords.Count == 0)
             {
-                mergedWords.Add([words[0]]);
+                mergedWords.Add([words[i]]);
                 continue;
             }
             
-            if (Math.Abs(GetMaxRight(mergedWords.Last()) - words[i].BoundingBox.Left) < xThreshold)
+            // 前のグループの右端と現在の単語の左端の距離を計算
+            var lastGroup = mergedWords.Last();
+            var distance = words[i].BoundingBox.Left - GetMaxRight(lastGroup);
+            
+            if (distance < xThreshold)
             {
-                int index = mergedWords.Count - 1;
-                mergedWords[index].Add(words[i]);
+                // 近接している場合は同じグループに追加
+                lastGroup.Add(words[i]);
             }
             else
             {
+                // 離れている場合は新しいグループを作成
                 mergedWords.Add([words[i]]);
             }
         }

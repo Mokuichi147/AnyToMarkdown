@@ -309,20 +309,17 @@ internal class PdfStructureAnalyzer
             // 日本語PDFではイタリックがフォント名に反映されない場合が多い
             // そのため、太字検出に重点を置く
             
-            // Web調査に基づく汎用的なフォント命名パターン
+            // 汎用的なフォント検出パターン
             
-            // 太字判定：PDF標準14フォント + 日本語フォント重み番号
-            // Times-Bold, Helvetica-Bold, Arial-Bold + 日本語フォント W3,W4,W5,W6,W7,W8,W9
-            var boldPattern = @"(-bold|-black|-heavy|-semibold|-demibold|-extrabold|-ultrabold|bold|black|heavy|semibold|demi|extra|ultra|[67890]00|,bold|,b|-w[3-9]|w[3-9]-|-pro.*w[3-9]|medium|regular-bold)";
+            // 太字判定：一般的なパターンに絞る
+            var boldPattern = @"(bold|black|heavy|[6789]00)";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, boldPattern))
             {
                 formatting.IsBold = true;
             }
             
-            // 斜体判定：PDF標準パターン + 日本語フォントパターン
-            // Times-Italic, Helvetica-Oblique, Arial-Italic + 日本語フォント斜体表現
-            // 日本語では: Yu Mincho Italic, Hiragino Sans Oblique, MS Gothic Slanted等
-            var italicPattern = @"(-italic|-oblique|-slanted|italic|oblique|slanted|cursive|,italic|,i|-ital|-obl|ital$|oblique$|slanted$|cursive$|inclined|slope)";
+            // 斜体判定：基本パターンのみ
+            var italicPattern = @"(italic|oblique|slanted)";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern))
             {
                 formatting.IsItalic = true;

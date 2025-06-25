@@ -110,17 +110,23 @@ internal static class MarkdownGenerator
         if (text.StartsWith("•") || text.StartsWith("◦"))
             return "- " + text.Substring(1).Trim();
             
-        // 数字付きリストの修正 - スペースを確保
-        if (text.Length >= 2 && char.IsDigit(text[0]) && text[1] == '.')
+        // 数字付きリストの処理（より柔軟に）
+        var numberListMatch = System.Text.RegularExpressions.Regex.Match(text, @"^(\d{1,3})[\.\)](.*)");
+        if (numberListMatch.Success)
         {
-            if (text.Length > 2 && text[2] != ' ')
-                return text[0] + ". " + text.Substring(2);
-            return text;
+            var number = numberListMatch.Groups[1].Value;
+            var content = numberListMatch.Groups[2].Value.Trim();
+            return $"{number}. {content}";
         }
             
         // 括弧付き数字を変換
-        if (text.Length > 3 && text[0] == '(' && char.IsDigit(text[1]) && text[2] == ')')
-            return $"{text[1]}. {text.Substring(3).Trim()}";
+        var parenNumberMatch = System.Text.RegularExpressions.Regex.Match(text, @"^\((\d{1,3})\)(.*)");
+        if (parenNumberMatch.Success)
+        {
+            var number = parenNumberMatch.Groups[1].Value;
+            var content = parenNumberMatch.Groups[2].Value.Trim();
+            return $"{number}. {content}";
+        }
             
         // その他はダッシュを付ける
         return $"- {text}";
