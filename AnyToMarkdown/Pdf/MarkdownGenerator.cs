@@ -144,6 +144,8 @@ internal static class MarkdownGenerator
             ElementType.Header => ConvertHeader(element, fontAnalysis),
             ElementType.ListItem => ConvertListItem(element),
             ElementType.TableRow => ConvertTableRow(element, allElements, currentIndex),
+            ElementType.CodeBlock => ConvertCodeBlock(element, allElements, currentIndex),
+            ElementType.QuoteBlock => ConvertQuoteBlock(element, allElements, currentIndex),
             ElementType.Paragraph => ConvertParagraph(element),
             _ => element.Content
         };
@@ -517,6 +519,156 @@ internal static class MarkdownGenerator
         text = RestoreFormatting(text);
         
         return text;
+    }
+    
+    private static string ConvertCodeBlock(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
+    {
+        // 連続するコードブロック行を検出してまとめる
+        var codeLines = new List<DocumentElement>();
+        
+        // 現在の行から後方のコードブロック行を収集
+        for (int i = currentIndex; i < allElements.Count; i++)
+        {
+            if (allElements[i].Type == ElementType.CodeBlock)
+            {
+                codeLines.Add(allElements[i]);
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // 最初の行の場合のみコードブロックを生成
+        if (currentIndex == 0 || allElements[currentIndex - 1].Type != ElementType.CodeBlock)
+        {
+            return GenerateMarkdownCodeBlock(codeLines);
+        }
+
+        // 後続の行は空文字を返す（既にコードブロックに含まれている）
+        return "";
+    }
+    
+    private static string ConvertQuoteBlock(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
+    {
+        // 連続する引用ブロック行を検出してまとめる
+        var quoteLines = new List<DocumentElement>();
+        
+        // 現在の行から後方の引用ブロック行を収集
+        for (int i = currentIndex; i < allElements.Count; i++)
+        {
+            if (allElements[i].Type == ElementType.QuoteBlock)
+            {
+                quoteLines.Add(allElements[i]);
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // 最初の行の場合のみ引用ブロックを生成
+        if (currentIndex == 0 || allElements[currentIndex - 1].Type != ElementType.QuoteBlock)
+        {
+            return GenerateMarkdownQuoteBlock(quoteLines);
+        }
+
+        // 後続の行は空文字を返す（既に引用ブロックに含まれている）
+        return "";
+    }
+    
+    private static string GenerateMarkdownCodeBlock(List<DocumentElement> codeLines)
+    {
+        if (codeLines.Count == 0) return "";
+        
+        var sb = new StringBuilder();
+        
+        // 言語の検出
+        string language = DetectCodeLanguage(codeLines);
+        
+        sb.AppendLine($"```{language}");
+        
+        foreach (var line in codeLines)
+        {
+            var content = line.Content.Trim();
+            
+            // 既に``` で囲まれている場合は除去
+            if (content.StartsWith("```")) 
+            {
+                content = content.Substring(3).Trim();
+            }
+            if (content.EndsWith("```"))
+            {
+                content = content.Substring(0, content.Length - 3).Trim();
+            }
+            
+            sb.AppendLine(content);
+        }
+        
+        sb.AppendLine("```");
+        
+        return sb.ToString();
+    }
+    
+    private static string GenerateMarkdownQuoteBlock(List<DocumentElement> quoteLines)
+    {
+        if (quoteLines.Count == 0) return "";
+        
+        var sb = new StringBuilder();
+        
+        foreach (var line in quoteLines)
+        {
+            var content = line.Content.Trim();
+            
+            // 既に > で始まっている場合はそのまま
+            if (content.StartsWith(">"))
+            {
+                sb.AppendLine(content);
+            }
+            else
+            {
+                sb.AppendLine($"> {content}");
+            }
+        }
+        
+        return sb.ToString();
+    }
+    
+    private static string DetectCodeLanguage(List<DocumentElement> codeLines)
+    {
+        if (codeLines.Count == 0) return "";
+        
+        var allText = string.Join(" ", codeLines.Select(l => l.Content));
+        
+        // Python
+        if (allText.Contains("def ") || allText.Contains("import ") || allText.Contains("from ") || allText.Contains("python"))
+            return "python";
+            
+        // JavaScript/JSON
+        if (allText.Contains("function") || allText.Contains("const ") || allText.Contains("let ") || allText.Contains("var "))
+            return "javascript";
+            
+        // JSON
+        if ((allText.Contains("{") && allText.Contains("}")) || allText.Contains("\"key\":"))
+            return "json";
+            
+        // Bash/Shell
+        if (allText.Contains("#!/bin/bash") || allText.Contains("sudo ") || allText.Contains("apt-get") || allText.Contains("yum "))
+            return "bash";
+            
+        // C#
+        if (allText.Contains("using ") || allText.Contains("namespace ") || allText.Contains("public class"))
+            return "csharp";
+            
+        // HTML
+        if (allText.Contains("<html") || allText.Contains("</html>") || allText.Contains("<div"))
+            return "html";
+            
+        // CSS
+        if (allText.Contains("{") && allText.Contains("}") && allText.Contains(":"))
+            return "css";
+        
+        return "";
     }
     
     private static string RestoreFormatting(string text)

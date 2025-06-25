@@ -140,8 +140,16 @@ internal class PdfStructureAnalyzer
         
         // 明確なMarkdownパターン
         if (cleanText.StartsWith("#")) return ElementType.Header;
+        if (cleanText.StartsWith(">")) return ElementType.QuoteBlock;
+        if (cleanText.StartsWith("```")) return ElementType.CodeBlock;
         if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return ElementType.ListItem;
         if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return ElementType.ListItem;
+
+        // コードブロックの判定（モノスペースフォントやインデント）
+        if (IsCodeBlockLike(cleanText, words, fontAnalysis)) return ElementType.CodeBlock;
+        
+        // 引用ブロックの判定
+        if (IsQuoteBlockLike(cleanText)) return ElementType.QuoteBlock;
 
         // リストアイテムの判定を最優先（数字付きリストを含む）
         if (IsListItemLike(cleanText)) return ElementType.ListItem;
@@ -184,11 +192,19 @@ internal class PdfStructureAnalyzer
         // Markdownフォーマットを除去してテキスト分析を行う
         var cleanText = text;
         
-        // 太字フォーマットを除去
-        cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"\*{1,3}([^*]+)\*{1,3}", "$1");
+        // 太字フォーマットを除去（複数回実行して入れ子を処理）
+        while (cleanText.Contains("**") || cleanText.Contains("*"))
+        {
+            var before = cleanText;
+            cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"\*{1,3}([^*]*)\*{1,3}", "$1");
+            if (before == cleanText) break; // 変化がなければ終了
+        }
         
         // 斜体フォーマットを除去  
         cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"_([^_]+)_", "$1");
+        
+        // 余分なスペースを統合
+        cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"\s+", " ");
         
         return cleanText.Trim();
     }
@@ -204,6 +220,9 @@ internal class PdfStructureAnalyzer
         // 階層的な数字パターンはヘッダー (1.1, 1.1.1)
         var hierarchicalPattern = @"^\d+\.\d+";
         if (System.Text.RegularExpressions.Regex.IsMatch(text, hierarchicalPattern)) return true;
+        
+        // 章番号とタイトルのパターン (1. 概要, 2.1 システム要件など)
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+[\.\s]+\S+")) return true;
 
         return false;
     }
@@ -218,6 +237,9 @@ internal class PdfStructureAnalyzer
         
         // 階層的な数字パターン (1.1, 1.1.1, 1.1.1.1)
         if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+(\.\d+){1,3}$")) return true;
+        
+        // 章番号とタイトルのパターン (1. 概要, 2.1 システム要件など)
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+(\.\d+)*[\.\s]+\S+")) return true;
         
         // 大文字のタイトル（英語）
         if (text.All(c => char.IsUpper(c) || char.IsWhiteSpace(c) || char.IsDigit(c)) && text.Any(char.IsLetter)) return true;
@@ -286,6 +308,69 @@ internal class PdfStructureAnalyzer
             }
         }
 
+        return false;
+    }
+    
+    private static bool IsCodeBlockLike(string text, List<Word> words, FontAnalysis fontAnalysis)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        // 明確なコードブロック開始・終了マーカー
+        if (text.StartsWith("```") || text.EndsWith("```")) return true;
+        
+        // プログラミング言語のキーワードパターン
+        var codeKeywords = new[] { "def ", "class ", "function ", "import ", "from ", "if __name__", "try:", "except:", "finally:", "with ", "async def", "await ", "return ", "yield ", "break", "continue", "pass", "raise", "assert", "del", "global", "nonlocal", "lambda", "for ", "while ", "if ", "elif ", "else:", "and ", "or ", "not ", "in ", "is ", "True", "False", "None" };
+        if (codeKeywords.Any(keyword => text.Contains(keyword))) return true;
+        
+        // JSON/設定ファイルパターン
+        if ((text.Contains("{") && text.Contains("}")) || (text.Contains("[") && text.Contains("]"))) return true;
+        if (text.Contains("\"key\":") || text.Contains("'key':")) return true;
+        
+        // コマンドラインパターン
+        if (text.StartsWith("$") || text.StartsWith("#") || text.Contains("--")) return true;
+        
+        // インデントが深い場合（4スペース以上）
+        if (text.StartsWith("    ") || text.StartsWith("\t")) return true;
+        
+        // モノスペースフォントの検出
+        if (words != null && words.Count > 0)
+        {
+            var fontNames = words.Where(w => !string.IsNullOrEmpty(w.FontName))
+                                .GroupBy(w => w.FontName)
+                                .OrderByDescending(g => g.Count())
+                                .ToList();
+                                
+            if (fontNames.Count > 0)
+            {
+                var dominantFont = fontNames.First().Key.ToLower();
+                // 一般的なモノスペースフォント名
+                var monospaceFonts = new[] { "courier", "consolas", "monaco", "menlo", "source code", "dejavu sans mono", "liberation mono", "ubuntu mono" };
+                if (monospaceFonts.Any(font => dominantFont.Contains(font))) return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private static bool IsQuoteBlockLike(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        // 明確な引用マーカー
+        if (text.StartsWith(">")) return true;
+        
+        // 日本語の引用表現
+        if (text.StartsWith("「") && text.EndsWith("」")) return true;
+        if (text.StartsWith("『") && text.EndsWith("』")) return true;
+        
+        // 英語の引用符
+        if (text.StartsWith("\"") && text.EndsWith("\"")) return true;
+        if (text.StartsWith("'") && text.EndsWith("'")) return true;
+        
+        // 引用を示すフレーズ
+        var quoteIndicators = new[] { "注意", "重要", "警告", "Note:", "Important:", "Warning:", "Tip:", "記:", "備考" };
+        if (quoteIndicators.Any(indicator => text.StartsWith(indicator))) return true;
+        
         return false;
     }
     
@@ -1068,5 +1153,7 @@ public enum ElementType
     Header,
     Paragraph,
     ListItem,
-    TableRow
+    TableRow,
+    CodeBlock,
+    QuoteBlock
 }
