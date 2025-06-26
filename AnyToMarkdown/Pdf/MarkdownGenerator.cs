@@ -863,64 +863,40 @@ internal static class MarkdownGenerator
     
     private static bool ShouldMergeRows(List<string> currentRow, List<string> nextRow)
     {
-        // 基本的なヒューリスティック：
-        // 1. 次の行の最初のセルが空、継続マーカー、または禁止文字で、他のセルに内容がある場合は統合
-        // 2. 両方の行のセル数が同じで、次の行が明らかに継続内容の場合は統合
+        // 統合条件を厳格化して誤統合を防ぐ
+        if (nextRow.Count == 0 || currentRow.Count == 0) return false;
         
-        if (nextRow.Count == 0) return false;
+        // セル数が大きく異なる場合は統合しない
+        if (Math.Abs(currentRow.Count - nextRow.Count) > 1) return false;
         
-        var firstCell = nextRow[0]?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "";
+        var firstCellNext = nextRow[0]?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "";
+        var firstCellCurrent = currentRow[0]?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "";
         
-        // 改良された継続行判定：日本語セルの分離パターンを検出
-        var isFirstCellEmpty = string.IsNullOrWhiteSpace(firstCell);
+        // 次の行の最初のセルが空でない場合は新しい行として扱う
+        if (!string.IsNullOrWhiteSpace(firstCellNext))
+        {
+            return false;
+        }
         
-        // 次の行の内容分布を分析
-        var nonEmptyNextCells = nextRow.Where(c => !string.IsNullOrWhiteSpace(c?.Replace("￿", "").Replace("\uFFFD", "").Trim())).Count();
-        var nextCellLengths = nextRow.Select(c => (c?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "").Length).ToList();
+        // 現在の行の最初のセルが空の場合も統合しない（両方とも継続行の可能性）
+        if (string.IsNullOrWhiteSpace(firstCellCurrent))
+        {
+            return false;
+        }
         
-        // 前の行の内容分布を分析
-        var nonEmptyCurrentCells = currentRow.Where(c => !string.IsNullOrWhiteSpace(c?.Replace("￿", "").Replace("\uFFFD", "").Trim())).Count();
-        
-        // 次の行が継続行である可能性の判定
-        // 1. 最初のセルが空で、他のセルに短いコンテンツが含まれている
-        // 2. 行全体のセル数が少ない（継続コンテンツの特徴）
-        bool isPotentialContinuation = isFirstCellEmpty && nonEmptyNextCells > 0 && nonEmptyNextCells < currentRow.Count;
-        
-        // 短い断片的なコンテンツパターンを検出（日本語での単語分離）
-        bool hasFragmentedContent = nextCellLengths.Where(l => l > 0).All(l => l < 10) && 
-                                   nextCellLengths.Where(l => l > 0).Count() <= 2;
-        
-        var hasContentInOtherCells = nextRow.Skip(1).Any(c => 
+        // 次の行に意味のあるコンテンツがあるかチェック
+        var hasValidContent = nextRow.Skip(1).Any(c => 
         {
             var cleanCell = c?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "";
-            return !string.IsNullOrWhiteSpace(cleanCell) && cleanCell.Length > 0;
+            return !string.IsNullOrWhiteSpace(cleanCell) && cleanCell.Length > 1;
         });
         
-        // 多段階の統合判定
-        
-        // パターン1: 最初のセルが空で、他のセルに継続コンテンツがある
-        if (isPotentialContinuation && hasContentInOtherCells)
+        // 条件1: 最初のセルが空で、2番目以降のセルに内容がある
+        if (string.IsNullOrWhiteSpace(firstCellNext) && hasValidContent)
         {
-            return true;
-        }
-        
-        // パターン2: 断片的なコンテンツの継続（文字数制限で分割された可能性）
-        if (hasFragmentedContent && isFirstCellEmpty)
-        {
-            return true;
-        }
-        
-        // パターン3: セル数が一致し、次の行の内容が短い場合（継続行の可能性）
-        if (currentRow.Count == nextRow.Count && nonEmptyNextCells > 0)
-        {
-            var avgCurrentLength = currentRow.Where(c => !string.IsNullOrWhiteSpace(c?.Trim())).DefaultIfEmpty("").Average(c => c.Length);
-            var avgNextLength = nextRow.Where(c => !string.IsNullOrWhiteSpace(c?.Trim())).DefaultIfEmpty("").Average(c => c.Length);
-            
-            // 次の行の平均文字数が現在の行の半分以下で、短いテキストの場合は継続行と判定
-            if (avgNextLength > 0 && avgCurrentLength > 0 && avgNextLength < avgCurrentLength * 0.6 && avgNextLength < 15)
-            {
-                return true;
-            }
+            // 次の行のセル数が少ない場合のみ統合（継続行の特徴）
+            var nonEmptyNextCells = nextRow.Count(c => !string.IsNullOrWhiteSpace(c?.Replace("￿", "").Replace("\uFFFD", "").Trim()));
+            return nonEmptyNextCells <= 2 && nonEmptyNextCells < currentRow.Count;
         }
         
         return false;
@@ -1149,25 +1125,25 @@ internal static class MarkdownGenerator
         if (cells.Count > 0 && string.IsNullOrWhiteSpace(cells[0])) cells.RemoveAt(0);
         if (cells.Count > 0 && string.IsNullOrWhiteSpace(cells[cells.Count - 1])) cells.RemoveAt(cells.Count - 1);
         
-        // 全ての断片を結合して説明セル（通常2番目のセル）に配置
+        // 意味的な断片分析を行って適切なセルに配置
         if (fragments.Count > 0 && cells.Count >= 2)
         {
-            var combinedFragments = string.Join(" ", fragments.Select(f => f.Trim()).Where(f => !string.IsNullOrWhiteSpace(f)));
+            var processedFragments = AnalyzeAndProcessFragments(fragments, cells);
             
-            if (!string.IsNullOrWhiteSpace(combinedFragments))
+            for (int i = 0; i < Math.Min(processedFragments.Count, cells.Count); i++)
             {
-                // 説明セル（インデックス1）に統合
-                var descriptionCellIndex = 1;
-                
-                if (!string.IsNullOrWhiteSpace(cells[descriptionCellIndex].Trim()))
+                if (!string.IsNullOrWhiteSpace(processedFragments[i]))
                 {
-                    // 既存の内容がある場合は<br>で結合
-                    cells[descriptionCellIndex] = " " + cells[descriptionCellIndex].Trim() + "<br>" + combinedFragments + " ";
-                }
-                else
-                {
-                    // 空のセルの場合は直接配置
-                    cells[descriptionCellIndex] = " " + combinedFragments + " ";
+                    if (!string.IsNullOrWhiteSpace(cells[i].Trim()))
+                    {
+                        // 既存の内容がある場合は<br>で結合
+                        cells[i] = " " + cells[i].Trim() + "<br>" + processedFragments[i] + " ";
+                    }
+                    else
+                    {
+                        // 空のセルの場合は直接配置
+                        cells[i] = " " + processedFragments[i] + " ";
+                    }
                 }
             }
         }
@@ -1206,5 +1182,216 @@ internal static class MarkdownGenerator
         }
         
         return result.ToArray();
+    }
+
+    private static List<string> AnalyzeAndProcessFragments(List<string> fragments, List<string> existingCells)
+    {
+        var processedFragments = new List<string>(new string[existingCells.Count]);
+        
+        if (fragments.Count == 0) return processedFragments;
+        
+        // 断片を意味的に分析
+        var analysisResult = AnalyzeFragmentMeaning(fragments, existingCells);
+        
+        // 最も適切なセルに配置
+        for (int i = 0; i < analysisResult.Count; i++)
+        {
+            var fragment = analysisResult[i];
+            if (string.IsNullOrWhiteSpace(fragment.Content)) continue;
+            
+            var targetCellIndex = fragment.TargetCellIndex;
+            if (targetCellIndex >= 0 && targetCellIndex < processedFragments.Count)
+            {
+                if (string.IsNullOrWhiteSpace(processedFragments[targetCellIndex]))
+                {
+                    processedFragments[targetCellIndex] = fragment.Content;
+                }
+                else
+                {
+                    // 複数の断片が同じセルに配置される場合
+                    if (fragment.IsLineBreak)
+                    {
+                        processedFragments[targetCellIndex] += "<br>" + fragment.Content;
+                    }
+                    else if (fragment.IsWordFragment)
+                    {
+                        // 単語断片は直接結合（スペースなし）
+                        processedFragments[targetCellIndex] += fragment.Content;
+                    }
+                    else
+                    {
+                        // 通常の単語はスペースで結合
+                        processedFragments[targetCellIndex] += " " + fragment.Content;
+                    }
+                }
+            }
+        }
+        
+        return processedFragments;
+    }
+    
+    private static List<FragmentAnalysis> AnalyzeFragmentMeaning(List<string> fragments, List<string> existingCells)
+    {
+        var results = new List<FragmentAnalysis>();
+        
+        for (int i = 0; i < fragments.Count; i++)
+        {
+            var fragment = fragments[i].Trim();
+            if (string.IsNullOrWhiteSpace(fragment)) continue;
+            
+            var analysis = new FragmentAnalysis
+            {
+                Content = fragment,
+                OriginalIndex = i
+            };
+            
+            // セル配置の決定ロジック
+            analysis.TargetCellIndex = DetermineTargetCell(fragment, existingCells, i);
+            
+            // 改行判定ロジック
+            analysis.IsLineBreak = ShouldBeLineBreak(fragment, fragments, i);
+            
+            // 単語完成性の判定
+            analysis.IsWordFragment = IsWordFragment(fragment);
+            
+            results.Add(analysis);
+        }
+        
+        // 単語断片を結合
+        results = ConsolidateWordFragments(results);
+        
+        return results;
+    }
+    
+    private static int DetermineTargetCell(string fragment, List<string> existingCells, int fragmentIndex)
+    {
+        // デフォルトは説明セル（インデックス1）
+        if (existingCells.Count < 2) return 0;
+        
+        // 数字のみの場合は年齢セル（インデックス1）の可能性
+        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^\d{1,3}$"))
+        {
+            return 1;
+        }
+        
+        // 職業関連の単語（営業、エンジニア、デザイナーなど）
+        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"(営業|エンジニア|デザイナー|開発|管理|販売|事務|技術)"))
+        {
+            return Math.Min(2, existingCells.Count - 1);
+        }
+        
+        // 名前の可能性（漢字3-4文字）
+        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^[一-龯]{2,4}$"))
+        {
+            return 0;
+        }
+        
+        // 地名・住所関連
+        if (fragment.Contains("都") || fragment.Contains("府") || fragment.Contains("県") || fragment.Contains("市"))
+        {
+            return Math.Min(3, existingCells.Count - 1);
+        }
+        
+        // その他は説明セル
+        return 1;
+    }
+    
+    private static bool ShouldBeLineBreak(string fragment, List<string> allFragments, int currentIndex)
+    {
+        // 前の断片との関連性を判定
+        if (currentIndex > 0)
+        {
+            var prevFragment = allFragments[currentIndex - 1].Trim();
+            
+            // 文章の継続でない場合は改行
+            if (prevFragment.EndsWith("。") || prevFragment.EndsWith("！") || prevFragment.EndsWith("？"))
+            {
+                return true;
+            }
+            
+            // 異なる意味的カテゴリの場合は改行
+            if (IsDifferentSemanticCategory(prevFragment, fragment))
+            {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private static bool IsWordFragment(string fragment)
+    {
+        // 非常に短い断片は単語の一部の可能性
+        if (fragment.Length <= 1) return true;
+        
+        // ひらがな1-2文字のみの断片（助詞など）
+        if (fragment.Length <= 2 && System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^[ひ-ん]+$"))
+        {
+            return true;
+        }
+        
+        // カタカナの断片
+        if (fragment.Length <= 3 && System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^[ァ-ヶ]+$"))
+        {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private static bool IsDifferentSemanticCategory(string fragment1, string fragment2)
+    {
+        var categories1 = GetSemanticCategories(fragment1);
+        var categories2 = GetSemanticCategories(fragment2);
+        
+        return !categories1.Intersect(categories2).Any();
+    }
+    
+    private static HashSet<string> GetSemanticCategories(string text)
+    {
+        var categories = new HashSet<string>();
+        
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\d")) categories.Add("numeric");
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[一-龯]")) categories.Add("kanji");
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[ひ-ん]")) categories.Add("hiragana");
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[ァ-ヶ]")) categories.Add("katakana");
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[a-zA-Z]")) categories.Add("alphabet");
+        
+        return categories;
+    }
+    
+    private static List<FragmentAnalysis> ConsolidateWordFragments(List<FragmentAnalysis> analyses)
+    {
+        var consolidated = new List<FragmentAnalysis>();
+        
+        for (int i = 0; i < analyses.Count; i++)
+        {
+            var current = analyses[i];
+            
+            if (current.IsWordFragment && i + 1 < analyses.Count)
+            {
+                var next = analyses[i + 1];
+                if (next.TargetCellIndex == current.TargetCellIndex)
+                {
+                    // 同じセルの断片を結合
+                    current.Content += next.Content;
+                    current.IsWordFragment = false;
+                    i++; // 次の断片をスキップ
+                }
+            }
+            
+            consolidated.Add(current);
+        }
+        
+        return consolidated;
+    }
+
+    private class FragmentAnalysis
+    {
+        public string Content { get; set; } = "";
+        public int TargetCellIndex { get; set; }
+        public bool IsLineBreak { get; set; }
+        public bool IsWordFragment { get; set; }
+        public int OriginalIndex { get; set; }
     }
 }
