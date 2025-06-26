@@ -303,16 +303,24 @@ internal class PdfStructureAnalyzer
 
     private static bool IsTableRowLike(string text, List<Word> words)
     {
+        // 禁止文字を除去してからチェック
+        text = text.Replace("￿", "").Replace("\uFFFD", "").Trim();
+        if (string.IsNullOrEmpty(text)) return false;
+        
         var parts = text.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2) return false;
 
         // パイプ文字がある（既にMarkdownテーブル）
         if (text.Contains("|")) return true;
 
+        // 数値密度による表判定（言語・ドメイン非依存）
+        var digitRatio = (double)text.Count(char.IsDigit) / text.Length;
+        if (digitRatio > 0.2 && parts.Length >= 2) return true;
+
         // 数値の比率が高い場合
-        int numericParts = parts.Count(p => double.TryParse(p, out _) || 
-            p.Contains("%") || p.Contains(","));
-        if (parts.Length >= 3 && (double)numericParts / parts.Length > 0.5) return true;
+        int numericParts = parts.Count(p => double.TryParse(p.Replace(",", ""), out _) || 
+            p.Contains("%") || p.Contains(",") || System.Text.RegularExpressions.Regex.IsMatch(p, @"^\+?-?\d+\.?\d*$"));
+        if (parts.Length >= 3 && (double)numericParts / parts.Length > 0.4) return true;
 
         // 単語間の距離による判定（最も重要な指標）
         if (words != null && words.Count >= 3)
@@ -475,8 +483,11 @@ internal class PdfStructureAnalyzer
         
         var finalResult = result.ToString();
         
-        // 禁止文字（null文字など）を除去
-        finalResult = finalResult.Replace("\0", "");
+        // 禁止文字（null文字と置換文字など）を除去し、Unicode正規化を適用
+        finalResult = finalResult.Replace("\0", "").Replace("￿", "").Replace("\uFFFD", "");
+        
+        // Unicode正規化（NFC: 正規化形式C）
+        finalResult = finalResult.Normalize(System.Text.NormalizationForm.FormC);
         
         return finalResult;
     }
@@ -504,8 +515,8 @@ internal class PdfStructureAnalyzer
             }
             
             currentFormatting = wordFormatting;
-            // null文字を除去してからテキストを追加
-            var cleanText = word.Text?.Replace("\0", "") ?? "";
+            // null文字と置換文字を除去してからテキストを追加
+            var cleanText = word.Text?.Replace("\0", "").Replace("￿", "").Replace("\uFFFD", "") ?? "";
             currentSegment.Append(cleanText);
         }
         
@@ -573,9 +584,9 @@ internal class PdfStructureAnalyzer
                 formatting.IsBold = true;
             }
             
-            // 斜体判定：より包括的で柔軟なパターン
-            var italicPattern = @"(italic|oblique|slanted|cursive|emphasis|stress|kursiv)";
-            if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern))
+            // 斜体判定：より包括的で柔軟なパターン（大文字小文字を無視）
+            var italicPattern = @"(italic|oblique|slanted|cursive|emphasis|stress|kursiv|inclined|tilted)";
+            if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase))
             {
                 formatting.IsItalic = true;
             }
@@ -584,16 +595,14 @@ internal class PdfStructureAnalyzer
             if (fontName.Contains("-italic") || fontName.Contains("_italic") || 
                 fontName.EndsWith("-i") || fontName.EndsWith("_i") ||
                 fontName.Contains("-oblique") || fontName.Contains("-slant") ||
-                fontName.Contains("italic") || fontName.Contains("oblique"))
+                fontName.Contains("italic") || fontName.Contains("oblique") ||
+                fontName.Contains("italicmt") || fontName.Contains("-it") || 
+                fontName.EndsWith("it") || fontName.EndsWith("-i.ttf") ||
+                fontName.Contains("minion") && fontName.Contains("it"))
             {
                 formatting.IsItalic = true;
             }
             
-            // 日本語フォントの特殊なケース
-            if (fontName.Contains("斜体") || fontName.Contains("italics"))
-            {
-                formatting.IsItalic = true;
-            }
             
             // PostScriptフォント名のサブセットタグを除去して再判定
             // 例: "EOODIA+Poetica-Bold" -> "Poetica-Bold"
@@ -616,8 +625,8 @@ internal class PdfStructureAnalyzer
     
     private static string ApplyFormatting(string text, FontFormatting formatting)
     {
-        // null文字を除去
-        text = text.Replace("\0", "");
+        // null文字と置換文字を除去
+        text = text.Replace("\0", "").Replace("￿", "").Replace("\uFFFD", "");
         
         if (formatting.IsBold && formatting.IsItalic)
         {
@@ -838,28 +847,32 @@ internal class PdfStructureAnalyzer
     {
         var tableRegions = new List<TableRegion>();
         
-        if (graphicsInfo.HorizontalLines.Count < 2 || graphicsInfo.VerticalLines.Count < 2)
+        // 線ベースのテーブル検出を試行
+        if (graphicsInfo.HorizontalLines.Count >= 2 && graphicsInfo.VerticalLines.Count >= 2)
         {
-            return tableRegions; // 十分な線がない場合は空を返す
+            var gridCells = DetectGridCells(graphicsInfo);
+            
+            foreach (var cell in gridCells)
+            {
+                var cellElements = elements.Where(element => IsElementInCell(element, cell)).ToList();
+                
+                if (cellElements.Count > 0)
+                {
+                    var region = new TableRegion
+                    {
+                        Bounds = cell,
+                        Elements = cellElements
+                    };
+                    tableRegions.Add(region);
+                }
+            }
         }
         
-        // 水平線と垂直線から矩形グリッドを検出
-        var gridCells = DetectGridCells(graphicsInfo);
-        
-        foreach (var cell in gridCells)
+        // 線ベースで十分なテーブルが検出されない場合、ギャップベース検出を併用
+        if (tableRegions.Count == 0)
         {
-            // セル内に含まれる要素を検索
-            var cellElements = elements.Where(element => IsElementInCell(element, cell)).ToList();
-            
-            if (cellElements.Count > 0)
-            {
-                var region = new TableRegion
-                {
-                    Bounds = cell,
-                    Elements = cellElements
-                };
-                tableRegions.Add(region);
-            }
+            var gapBasedRegions = DetectTableByGapAnalysis(elements);
+            tableRegions.AddRange(gapBasedRegions);
         }
         
         return MergeAdjacentTableRegions(tableRegions);
@@ -943,29 +956,118 @@ internal class PdfStructureAnalyzer
     {
         var result = new List<DocumentElement>();
         
-        // テーブル領域内の要素をセル単位でグループ化
-        var cellGroups = GroupElementsByCells(region, graphicsInfo);
+        // より柔軟な行グループ化を使用
+        var rowGroups = GroupElementsByFlexibleRows(region.Elements);
         
-        // 各行を処理
-        foreach (var rowGroup in cellGroups.GroupBy(g => Math.Round(g.Key.Bottom, 0)).OrderByDescending(g => g.Key))
+        foreach (var rowElements in rowGroups)
         {
-            var cellContents = rowGroup.OrderBy(g => g.Key.Left)
-                                      .Select(g => string.Join(" ", g.Value.Select(e => e.Content)))
-                                      .ToList();
+            // 各行内の要素を左から右へソート
+            var sortedElements = rowElements.OrderBy(e => e.Words?.FirstOrDefault()?.BoundingBox.Left ?? 0).ToList();
             
-            if (cellContents.Any(c => !string.IsNullOrWhiteSpace(c)))
+            // 要素を列に分割
+            var columns = GroupElementsIntoColumns(sortedElements);
+            
+            if (columns.Count > 0 && columns.Any(col => col.Any(e => !string.IsNullOrWhiteSpace(e.Content))))
             {
+                var cellContents = columns.Select(col => 
+                {
+                    var content = string.Join(" ", col.Select(e => e.Content.Trim()).Where(c => !string.IsNullOrWhiteSpace(c)));
+                    return content;
+                }).ToList();
+                
                 var tableRow = new DocumentElement
                 {
                     Type = ElementType.TableRow,
                     Content = string.Join(" | ", cellContents),
-                    Words = rowGroup.SelectMany(g => g.Value.SelectMany(e => e.Words ?? [])).ToList()
+                    Words = sortedElements.SelectMany(e => e.Words ?? []).ToList()
                 };
                 result.Add(tableRow);
             }
         }
         
         return result;
+    }
+    
+    private static List<List<DocumentElement>> GroupElementsByFlexibleRows(List<DocumentElement> elements)
+    {
+        if (!elements.Any()) return [];
+        
+        var rows = new List<List<DocumentElement>>();
+        var tolerance = 5.0; // Y座標の許容差
+        
+        // Y座標でソート（上から下へ）
+        var sortedElements = elements.OrderByDescending(e => e.Words?.FirstOrDefault()?.BoundingBox.Bottom ?? 0).ToList();
+        
+        var currentRow = new List<DocumentElement> { sortedElements[0] };
+        var currentY = sortedElements[0].Words?.FirstOrDefault()?.BoundingBox.Bottom ?? 0;
+        
+        for (int i = 1; i < sortedElements.Count; i++)
+        {
+            var element = sortedElements[i];
+            var elementY = element.Words?.FirstOrDefault()?.BoundingBox.Bottom ?? 0;
+            
+            if (Math.Abs(elementY - currentY) <= tolerance)
+            {
+                // 同じ行
+                currentRow.Add(element);
+            }
+            else
+            {
+                // 新しい行
+                if (currentRow.Count > 0)
+                {
+                    rows.Add(currentRow);
+                }
+                currentRow = new List<DocumentElement> { element };
+                currentY = elementY;
+            }
+        }
+        
+        if (currentRow.Count > 0)
+        {
+            rows.Add(currentRow);
+        }
+        
+        return rows;
+    }
+    
+    private static List<List<DocumentElement>> GroupElementsIntoColumns(List<DocumentElement> rowElements)
+    {
+        if (!rowElements.Any()) return [];
+        
+        var columns = new List<List<DocumentElement>>();
+        var threshold = 30.0; // 列分離の閾値
+        
+        foreach (var element in rowElements)
+        {
+            var elementX = element.Words?.FirstOrDefault()?.BoundingBox.Left ?? 0;
+            
+            // 既存の列に追加できるかチェック
+            bool addedToExistingColumn = false;
+            
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var columnX = columns[i].FirstOrDefault()?.Words?.FirstOrDefault()?.BoundingBox.Left ?? 0;
+                
+                if (Math.Abs(elementX - columnX) <= threshold)
+                {
+                    columns[i].Add(element);
+                    addedToExistingColumn = true;
+                    break;
+                }
+            }
+            
+            if (!addedToExistingColumn)
+            {
+                // 新しい列を作成
+                columns.Add(new List<DocumentElement> { element });
+            }
+        }
+        
+        // 列をX座標でソート
+        columns = columns.OrderBy(col => col.FirstOrDefault()?.Words?.FirstOrDefault()?.BoundingBox.Left ?? 0).ToList();
+        
+        return columns;
     }
 
     private static Dictionary<UglyToad.PdfPig.Core.PdfRectangle, List<DocumentElement>> GroupElementsByCells(TableRegion region, GraphicsInfo graphicsInfo)
@@ -1179,6 +1281,78 @@ internal class PdfStructureAnalyzer
         }
         
         return false;
+    }
+
+    private static List<TableRegion> DetectTableByGapAnalysis(List<DocumentElement> elements)
+    {
+        var tableRegions = new List<TableRegion>();
+        
+        // Y座標でグループ化して行を識別
+        var rowGroups = elements
+            .Where(e => e.Type == ElementType.Paragraph || e.Type == ElementType.TableRow)
+            .GroupBy(e => Math.Round(e.Words?.FirstOrDefault()?.BoundingBox.Bottom ?? 0, 1))
+            .Where(g => g.Count() >= 2) // 最低2つの要素がある行のみ
+            .OrderByDescending(g => g.Key)
+            .ToList();
+        
+        if (rowGroups.Count < 2) return tableRegions;
+        
+        var tableRows = new List<List<DocumentElement>>();
+        
+        foreach (var rowGroup in rowGroups)
+        {
+            var rowElements = rowGroup.OrderBy(e => e.Words?.FirstOrDefault()?.BoundingBox.Left ?? 0).ToList();
+            
+            // 水平ギャップ分析で列を検出
+            if (HasConsistentColumnStructure(rowElements))
+            {
+                tableRows.Add(rowElements);
+            }
+        }
+        
+        // 連続する行がテーブルを形成するかチェック
+        if (tableRows.Count >= 2)
+        {
+            // 全ての行を含む単一のテーブル領域を作成
+            var allElements = tableRows.SelectMany(row => row).ToList();
+            
+            if (allElements.Count > 0)
+            {
+                var minX = allElements.SelectMany(e => e.Words ?? []).Min(w => w.BoundingBox.Left);
+                var maxX = allElements.SelectMany(e => e.Words ?? []).Max(w => w.BoundingBox.Right);
+                var minY = allElements.SelectMany(e => e.Words ?? []).Min(w => w.BoundingBox.Bottom);
+                var maxY = allElements.SelectMany(e => e.Words ?? []).Max(w => w.BoundingBox.Top);
+                
+                var bounds = new UglyToad.PdfPig.Core.PdfRectangle(minX, minY, maxX, maxY);
+                
+                var region = new TableRegion
+                {
+                    Bounds = bounds,
+                    Elements = allElements
+                };
+                tableRegions.Add(region);
+            }
+        }
+        
+        return tableRegions;
+    }
+    
+    private static bool HasConsistentColumnStructure(List<DocumentElement> rowElements)
+    {
+        if (rowElements.Count < 2) return false;
+        
+        // 要素間の水平ギャップを計算
+        var gaps = new List<double>();
+        for (int i = 0; i < rowElements.Count - 1; i++)
+        {
+            var current = rowElements[i].Words?.LastOrDefault()?.BoundingBox.Right ?? 0;
+            var next = rowElements[i + 1].Words?.FirstOrDefault()?.BoundingBox.Left ?? 0;
+            var gap = next - current;
+            if (gap > 5) gaps.Add(gap); // 意味のあるギャップのみ
+        }
+        
+        // 十分な数のギャップがある場合はテーブル行と判定
+        return gaps.Count >= 1 && gaps.Any(g => g > 15);
     }
 }
 

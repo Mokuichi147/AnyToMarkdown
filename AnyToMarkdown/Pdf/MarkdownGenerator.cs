@@ -214,12 +214,12 @@ internal static class MarkdownGenerator
             var currentSizeRank = allSizes.IndexOf(element.FontSize);
             if (currentSizeRank >= 0)
             {
-                // フォントサイズの順位に基づいてレベルを決定
+                // フォントサイズの順位に基づいてレベルを決定（より一般的なレベルを優先）
                 var normalizedRank = (double)currentSizeRank / Math.Max(allSizes.Count - 1, 1);
                 
-                if (normalizedRank <= 0.2) return 1;  // 上位20%
-                if (normalizedRank <= 0.4) return 2;  // 上位40%
-                if (normalizedRank <= 0.6) return 3;  // 上位60%
+                if (normalizedRank <= 0.2) return 1;  // 上位20%のみレベル1
+                if (normalizedRank <= 0.6) return 2;  // 上位60%はレベル2
+                if (normalizedRank <= 0.8) return 3;  // 上位80%はレベル3
                 return 4;
             }
         }
@@ -328,14 +328,29 @@ internal static class MarkdownGenerator
         // テーブル行が不足している場合は空文字を返す
         if (allCells.Count < 1) return "";
 
-        // 列数の正規化：最も一般的な列数に合わせる（より柔軟に）
+        // より堅牢な列数正規化
         if (allCells.Count > 0)
         {
+            // 列数の統計的分析
             var columnCounts = allCells.GroupBy(row => row.Count).OrderByDescending(g => g.Count());
-            var normalizedColumnCount = columnCounts.First().Key;
+            var mostFrequentColumnCount = columnCounts.First().Key;
+            var secondMostFrequentCount = columnCounts.Count() > 1 ? columnCounts.Skip(1).First().Key : mostFrequentColumnCount;
             
-            // 少なくとも2列は確保し、最大列数との差を2列まで許容
-            maxColumns = Math.Max(Math.Min(maxColumns, normalizedColumnCount + 2), 2);
+            // 最頻値とその次を考慮して適応的に決定
+            var targetColumnCount = mostFrequentColumnCount;
+            
+            // 非常に少ない行数の場合は最大列数を優先
+            if (allCells.Count <= 2)
+            {
+                targetColumnCount = Math.Max(maxColumns, mostFrequentColumnCount);
+            }
+            // 複数の異なる列数がある場合は、より大きい値を選択（データ損失を避ける）
+            else if (Math.Abs(mostFrequentColumnCount - secondMostFrequentCount) <= 1)
+            {
+                targetColumnCount = Math.Max(mostFrequentColumnCount, secondMostFrequentCount);
+            }
+            
+            maxColumns = Math.Max(targetColumnCount, 2);
         }
 
         // 列数を統一
@@ -360,7 +375,7 @@ internal static class MarkdownGenerator
             foreach (var cell in cells)
             {
                 var cleanCell = cell.Replace("|", "\\|").Trim();
-                if (string.IsNullOrWhiteSpace(cleanCell)) cleanCell = " ";
+                if (string.IsNullOrWhiteSpace(cleanCell)) cleanCell = "";
                 sb.Append($" {cleanCell} |");
             }
             sb.AppendLine();
@@ -384,6 +399,9 @@ internal static class MarkdownGenerator
     {
         var text = row.Content;
         var words = row.Words;
+        
+        // 全ての置換文字を事前に除去
+        text = text.Replace("￿", "").Replace("\uFFFD", "").Trim();
         
         // パイプ文字があれば既にMarkdownテーブル形式（改良版）
         if (text.Contains("|"))
@@ -424,20 +442,24 @@ internal static class MarkdownGenerator
             return SplitTextIntoCells(text);
         }
 
-        // 改良された適応的閾値設定
-        var avgGap = gaps.Average();
+        // 統計的に堅牢な適応的閾値設定
         var sortedGaps = gaps.OrderBy(g => g).ToList();
         var medianGap = sortedGaps[sortedGaps.Count / 2];
         
-        // より正確な閾値計算：大きなギャップと小さなギャップを区別
-        var q75 = sortedGaps[(int)(sortedGaps.Count * 0.75)];
-        var q25 = sortedGaps[(int)(sortedGaps.Count * 0.25)];
-        var iqr = q75 - q25;
+        // 四分位数による外れ値検出
+        var q1 = sortedGaps[(int)(sortedGaps.Count * 0.25)];
+        var q3 = sortedGaps[(int)(sortedGaps.Count * 0.75)];
+        var iqr = q3 - q1;
         
-        // IQRベースの閾値またはメディアンベースの閾値の大きい方を使用
-        var iqrThreshold = q75 + (iqr * 0.5);
-        var medianThreshold = medianGap * 1.5;
-        var threshold = Math.Max(Math.Max(iqrThreshold, medianThreshold), 15);
+        // Tukey's fence法による閾値設定（外れ値検出の標準手法）
+        var lowerFence = q1 - (1.5 * iqr);
+        var upperFence = q3 + (1.5 * iqr);
+        
+        // 通常ギャップと大きなギャップを区別する閾値
+        var threshold = Math.Max(upperFence, medianGap * 2.0);
+        
+        // 最小閾値を設定（非常に小さいテキストでも機能するように）
+        threshold = Math.Max(threshold, 10);
 
         currentCell.Add(words[0]);
         
@@ -482,10 +504,55 @@ internal static class MarkdownGenerator
     {
         if (string.IsNullOrWhiteSpace(text)) return new List<string>();
         
-        // より洗練された分割ロジック
+        // より洗練された分割ロジック - 財務データパターンに特化
         var parts = new List<string>();
         
-        // スペース、タブ、全角スペースで分割
+        // 密集した複合数値の特別処理
+        var digitRatio = (double)text.Count(char.IsDigit) / text.Length;
+        
+        // 汎用的な数値パターン分離（言語・ドメイン非依存）
+        var genericNumberPattern = @"(\d{1,4}[,.]?\d{0,3}%?|\+?-?\d{1,4}[,.]?\d{0,3}|\d{4}年|\w+\d+)";
+        var numberMatches = System.Text.RegularExpressions.Regex.Matches(text, genericNumberPattern);
+        
+        if (numberMatches.Count >= 3 && digitRatio > 0.3 && text.Length > 15)
+        {
+            var extractedParts = new List<string>();
+            var lastIndex = 0;
+            
+            foreach (System.Text.RegularExpressions.Match match in numberMatches)
+            {
+                // マッチ前のテキスト部分を追加
+                if (match.Index > lastIndex)
+                {
+                    var beforeText = text.Substring(lastIndex, match.Index - lastIndex).Trim();
+                    if (!string.IsNullOrWhiteSpace(beforeText))
+                    {
+                        extractedParts.Add(beforeText);
+                    }
+                }
+                
+                // マッチした数値部分を追加
+                extractedParts.Add(match.Value);
+                lastIndex = match.Index + match.Length;
+            }
+            
+            // 最後の残りテキストを追加
+            if (lastIndex < text.Length)
+            {
+                var remainingText = text.Substring(lastIndex).Trim();
+                if (!string.IsNullOrWhiteSpace(remainingText))
+                {
+                    extractedParts.Add(remainingText);
+                }
+            }
+            
+            if (extractedParts.Count >= 3)
+            {
+                return extractedParts.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
+            }
+        }
+        
+        // フォールバック: 通常の分割
         var candidates = text.Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries);
         
         // 日本語のテーブルヘッダーパターンを考慮
@@ -720,6 +787,9 @@ internal static class MarkdownGenerator
         // パイプ文字をエスケープ
         cellContent = cellContent.Replace("|", "\\|");
         
+        // 禁止文字（置換文字）を除去
+        cellContent = cellContent.Replace("￿", "").Replace("\uFFFD", "");
+        
         return cellContent.Trim();
     }
     
@@ -794,25 +864,63 @@ internal static class MarkdownGenerator
     private static bool ShouldMergeRows(List<string> currentRow, List<string> nextRow)
     {
         // 基本的なヒューリスティック：
-        // 1. 次の行の最初のセルが空で、他のセルに内容がある場合は統合
+        // 1. 次の行の最初のセルが空、継続マーカー、または禁止文字で、他のセルに内容がある場合は統合
         // 2. 両方の行のセル数が同じで、次の行が明らかに継続内容の場合は統合
         
         if (nextRow.Count == 0) return false;
         
-        // 次の行の最初のセルが空で、残りに内容がある場合（典型的な複数行セル）
-        if (string.IsNullOrWhiteSpace(nextRow[0]) && nextRow.Skip(1).Any(c => !string.IsNullOrWhiteSpace(c)))
+        var firstCell = nextRow[0]?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "";
+        
+        // 改良された継続行判定：日本語セルの分離パターンを検出
+        var isFirstCellEmpty = string.IsNullOrWhiteSpace(firstCell);
+        
+        // 次の行の内容分布を分析
+        var nonEmptyNextCells = nextRow.Where(c => !string.IsNullOrWhiteSpace(c?.Replace("￿", "").Replace("\uFFFD", "").Trim())).Count();
+        var nextCellLengths = nextRow.Select(c => (c?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "").Length).ToList();
+        
+        // 前の行の内容分布を分析
+        var nonEmptyCurrentCells = currentRow.Where(c => !string.IsNullOrWhiteSpace(c?.Replace("￿", "").Replace("\uFFFD", "").Trim())).Count();
+        
+        // 次の行が継続行である可能性の判定
+        // 1. 最初のセルが空で、他のセルに短いコンテンツが含まれている
+        // 2. 行全体のセル数が少ない（継続コンテンツの特徴）
+        bool isPotentialContinuation = isFirstCellEmpty && nonEmptyNextCells > 0 && nonEmptyNextCells < currentRow.Count;
+        
+        // 短い断片的なコンテンツパターンを検出（日本語での単語分離）
+        bool hasFragmentedContent = nextCellLengths.Where(l => l > 0).All(l => l < 10) && 
+                                   nextCellLengths.Where(l => l > 0).Count() <= 2;
+        
+        var hasContentInOtherCells = nextRow.Skip(1).Any(c => 
+        {
+            var cleanCell = c?.Replace("￿", "").Replace("\uFFFD", "").Trim() ?? "";
+            return !string.IsNullOrWhiteSpace(cleanCell) && cleanCell.Length > 0;
+        });
+        
+        // 多段階の統合判定
+        
+        // パターン1: 最初のセルが空で、他のセルに継続コンテンツがある
+        if (isPotentialContinuation && hasContentInOtherCells)
         {
             return true;
         }
         
-        // セル数が一致し、次の行の内容が短い場合（継続行の可能性）
-        if (currentRow.Count == nextRow.Count)
+        // パターン2: 断片的なコンテンツの継続（文字数制限で分割された可能性）
+        if (hasFragmentedContent && isFirstCellEmpty)
         {
-            var avgCurrentLength = currentRow.Where(c => !string.IsNullOrWhiteSpace(c)).Average(c => c.Length);
-            var avgNextLength = nextRow.Where(c => !string.IsNullOrWhiteSpace(c)).Average(c => c.Length);
+            return true;
+        }
+        
+        // パターン3: セル数が一致し、次の行の内容が短い場合（継続行の可能性）
+        if (currentRow.Count == nextRow.Count && nonEmptyNextCells > 0)
+        {
+            var avgCurrentLength = currentRow.Where(c => !string.IsNullOrWhiteSpace(c?.Trim())).DefaultIfEmpty("").Average(c => c.Length);
+            var avgNextLength = nextRow.Where(c => !string.IsNullOrWhiteSpace(c?.Trim())).DefaultIfEmpty("").Average(c => c.Length);
             
-            // 次の行の平均文字数が現在の行の半分以下の場合は継続行と判定
-            return avgNextLength < avgCurrentLength * 0.5;
+            // 次の行の平均文字数が現在の行の半分以下で、短いテキストの場合は継続行と判定
+            if (avgNextLength > 0 && avgCurrentLength > 0 && avgNextLength < avgCurrentLength * 0.6 && avgNextLength < 15)
+            {
+                return true;
+            }
         }
         
         return false;
@@ -827,6 +935,13 @@ internal static class MarkdownGenerator
         markdown = RemoveForbiddenCharacters(markdown);
             
         var lines = markdown.Split('\n');
+        
+        // テーブルの分離された行を統合する前処理
+        lines = MergeDisconnectedTableCells(lines);
+        
+        // 重複するテーブル区切り行を除去
+        lines = RemoveDuplicateTableSeparators(lines);
+        
         var processedLines = new List<string>();
         
         bool previousWasEmpty = false;
@@ -890,6 +1005,10 @@ internal static class MarkdownGenerator
         // null文字（U+0000）を除去
         text = text.Replace("\0", "");
         
+        // 置換文字（U+FFFD, ￿）を除去 - これは文字化けを表す
+        text = text.Replace("￿", "");
+        text = text.Replace("\uFFFD", "");
+        
         // その他の制御文字を除去（印刷可能文字、空白、改行、タブ以外）
         var cleanedText = new StringBuilder();
         foreach (char c in text)
@@ -910,5 +1029,182 @@ internal static class MarkdownGenerator
         }
         
         return cleanedText.ToString();
+    }
+
+    private static string[] MergeDisconnectedTableCells(string[] lines)
+    {
+        var result = new List<string>();
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            
+            // テーブル行（|で始まり終わる）の直後にある分離されたテキストを検出
+            if (line.StartsWith("|") && line.EndsWith("|") && i + 1 < lines.Length)
+            {
+                var nextLines = new List<string>();
+                int j = i + 1;
+                
+                // 空行をスキップ
+                while (j < lines.Length && string.IsNullOrWhiteSpace(lines[j].Trim()))
+                {
+                    j++;
+                }
+                
+                // 連続する非テーブル行（断片化されたセル内容の可能性）を収集
+                while (j < lines.Length)
+                {
+                    var nextLine = lines[j].Trim();
+                    
+                    // ヘッダー、別のテーブル、区切り行に遭遇したら終了
+                    if (nextLine.StartsWith("#") ||
+                        nextLine.StartsWith("|") ||
+                        nextLine.Contains("---") ||
+                        nextLine.All(c => c == '-' || c == ' '))
+                    {
+                        break;
+                    }
+                    
+                    // 空行の場合は収集を続けるが、連続する空行は終了
+                    if (string.IsNullOrWhiteSpace(nextLine))
+                    {
+                        // 次の行が空でない場合は継続、そうでなければ終了
+                        if (j + 1 < lines.Length && !string.IsNullOrWhiteSpace(lines[j + 1].Trim()))
+                        {
+                            j++;
+                            continue;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    
+                    // テキスト行を収集（より寛容な条件）
+                    if (nextLine.Length > 0 && nextLine.Length <= 50 && !nextLine.Contains("|"))
+                    {
+                        nextLines.Add(nextLine);
+                        j++;
+                    }
+                    else if (nextLine.Length > 50)
+                    {
+                        // 長いテキストも1行だけ収集
+                        nextLines.Add(nextLine);
+                        j++;
+                        break;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                    
+                    // 最大5行まで統合（より多くの行を許可）
+                    if (nextLines.Count >= 5) break;
+                }
+                
+                // 分離されたテキストがある場合は、前のテーブル行のセルに統合
+                if (nextLines.Count > 0)
+                {
+                    var enhancedTableRow = MergeFragmentsIntoTableRow(line, nextLines);
+                    result.Add(enhancedTableRow);
+                    
+                    // 空行を追加してスキップした行数分進める
+                    while (i + 1 < j && i + 1 < lines.Length)
+                    {
+                        i++;
+                        if (string.IsNullOrWhiteSpace(lines[i].Trim()))
+                        {
+                            // 空行は維持
+                            if (result.Count > 0 && !string.IsNullOrWhiteSpace(result.Last()))
+                            {
+                                result.Add("");
+                            }
+                        }
+                    }
+                    i = j - 1; // 処理した行まで進める
+                }
+                else
+                {
+                    result.Add(lines[i]);
+                }
+            }
+            else
+            {
+                result.Add(lines[i]);
+            }
+        }
+        
+        return result.ToArray();
+    }
+    
+    private static string MergeFragmentsIntoTableRow(string tableRow, List<string> fragments)
+    {
+        if (fragments.Count == 0) return tableRow;
+        
+        // テーブル行をセルに分割
+        var cells = tableRow.Split('|').ToList();
+        if (cells.Count < 3) return tableRow; // 無効なテーブル行
+        
+        // 最初と最後の空要素を除去
+        if (cells.Count > 0 && string.IsNullOrWhiteSpace(cells[0])) cells.RemoveAt(0);
+        if (cells.Count > 0 && string.IsNullOrWhiteSpace(cells[cells.Count - 1])) cells.RemoveAt(cells.Count - 1);
+        
+        // 全ての断片を結合して説明セル（通常2番目のセル）に配置
+        if (fragments.Count > 0 && cells.Count >= 2)
+        {
+            var combinedFragments = string.Join(" ", fragments.Select(f => f.Trim()).Where(f => !string.IsNullOrWhiteSpace(f)));
+            
+            if (!string.IsNullOrWhiteSpace(combinedFragments))
+            {
+                // 説明セル（インデックス1）に統合
+                var descriptionCellIndex = 1;
+                
+                if (!string.IsNullOrWhiteSpace(cells[descriptionCellIndex].Trim()))
+                {
+                    // 既存の内容がある場合は<br>で結合
+                    cells[descriptionCellIndex] = " " + cells[descriptionCellIndex].Trim() + "<br>" + combinedFragments + " ";
+                }
+                else
+                {
+                    // 空のセルの場合は直接配置
+                    cells[descriptionCellIndex] = " " + combinedFragments + " ";
+                }
+            }
+        }
+        
+        // テーブル行を再構築
+        return "|" + string.Join("|", cells) + "|";
+    }
+
+    private static string[] RemoveDuplicateTableSeparators(string[] lines)
+    {
+        var result = new List<string>();
+        bool lastWasTableSeparator = false;
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            
+            // テーブル区切り行パターン（| --- | --- | など）
+            bool isTableSeparator = System.Text.RegularExpressions.Regex.IsMatch(line, @"^\|\s*---\s*(\|\s*---\s*)*\|?$");
+            
+            if (isTableSeparator)
+            {
+                // 前の行もテーブル区切りの場合はスキップ
+                if (!lastWasTableSeparator)
+                {
+                    result.Add(lines[i]);
+                    lastWasTableSeparator = true;
+                }
+                // else: 重複する区切り行をスキップ
+            }
+            else
+            {
+                result.Add(lines[i]);
+                lastWasTableSeparator = false;
+            }
+        }
+        
+        return result.ToArray();
     }
 }
