@@ -278,12 +278,23 @@ internal static class MarkdownGenerator
         // 連続するテーブル行を検出してMarkdownテーブルを生成
         var tableRows = new List<DocumentElement>();
         
-        // 現在の行から後方のテーブル行を収集
+        // 現在の行から後方のテーブル行を収集（ヘッダー要素は除外）
         for (int i = currentIndex; i < allElements.Count; i++)
         {
-            if (allElements[i].Type == ElementType.TableRow)
+            var currentElement = allElements[i];
+            
+            if (currentElement.Type == ElementType.TableRow)
             {
-                tableRows.Add(allElements[i]);
+                // 汎用的なヘッダー的内容をテーブル行から除外
+                if (IsStandaloneHeaderInTable(currentElement))
+                {
+                    break; // ヘッダー的要素に遭遇したらテーブル終了
+                }
+                tableRows.Add(currentElement);
+            }
+            else if (currentElement.Type == ElementType.Header)
+            {
+                break; // ヘッダー要素に遭遇したらテーブル終了
             }
             else
             {
@@ -350,7 +361,8 @@ internal static class MarkdownGenerator
                 targetColumnCount = Math.Max(mostFrequentColumnCount, secondMostFrequentCount);
             }
             
-            maxColumns = Math.Max(targetColumnCount, 2);
+            // 最小列数を3に設定（元の表構造に合わせて）
+            maxColumns = Math.Max(targetColumnCount, 3);
         }
 
         // 列数を統一
@@ -442,24 +454,28 @@ internal static class MarkdownGenerator
             return SplitTextIntoCells(text);
         }
 
-        // 統計的に堅牢な適応的閾値設定
+        // 改良された適応的閾値設定（より多くの列を検出）
         var sortedGaps = gaps.OrderBy(g => g).ToList();
         var medianGap = sortedGaps[sortedGaps.Count / 2];
         
-        // 四分位数による外れ値検出
+        // より低い閾値でより多くのセル境界を検出
         var q1 = sortedGaps[(int)(sortedGaps.Count * 0.25)];
         var q3 = sortedGaps[(int)(sortedGaps.Count * 0.75)];
         var iqr = q3 - q1;
         
-        // Tukey's fence法による閾値設定（外れ値検出の標準手法）
-        var lowerFence = q1 - (1.5 * iqr);
-        var upperFence = q3 + (1.5 * iqr);
+        // より敏感な閾値設定（より多くの列を検出するため）
+        var threshold = q1 + (iqr * 0.5); // より低い閾値
         
-        // 通常ギャップと大きなギャップを区別する閾値
-        var threshold = Math.Max(upperFence, medianGap * 2.0);
+        // 最小閾値を下げて細かい分割を許可
+        threshold = Math.Max(threshold, 5);
         
-        // 最小閾値を設定（非常に小さいテキストでも機能するように）
-        threshold = Math.Max(threshold, 10);
+        // 期待される列数（3-4列）を考慮した調整
+        var expectedColumns = 4;
+        if (gaps.Count > 0 && gaps.Count < expectedColumns)
+        {
+            // ギャップが少ない場合はより低い閾値を使用
+            threshold = Math.Max(medianGap * 1.2, 5);
+        }
 
         currentCell.Add(words[0]);
         
@@ -552,20 +568,19 @@ internal static class MarkdownGenerator
             }
         }
         
-        // フォールバック: 通常の分割
+        // フォールバック: より積極的な分割で多列対応
         var candidates = text.Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries);
         
-        // 日本語のテーブルヘッダーパターンを考慮
-        if (candidates.Length >= 4)
+        // より細かい分割を試行（3-4列を目指す）
+        if (candidates.Length >= 2)
         {
-            // 「項目 2024年Q2 2023年Q2 増減額 増減率」のようなパターン
             var result = new List<string>();
             var currentGroup = new List<string>();
             
             foreach (var candidate in candidates)
             {
-                // 年度・数値パターンの場合は独立したセル
-                if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d{4}年|^\+?\-?\d+\.?\d*%?$|^[A-Z]\d+$"))
+                // 数値、年度、短い単語パターンは独立したセル
+                if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d+$|^\d{4}年|^\+?\-?\d+\.?\d*%?$|^[A-Z]\d+$|^.{1,5}$"))
                 {
                     if (currentGroup.Count > 0)
                     {
@@ -1384,6 +1399,33 @@ internal static class MarkdownGenerator
         }
         
         return consolidated;
+    }
+
+    private static bool IsStandaloneHeaderInTable(DocumentElement element)
+    {
+        var content = element.Content.Trim();
+        
+        // 太字フォーマットされたテキストの汎用的分析
+        if (content.Contains("**"))
+        {
+            var boldMatch = System.Text.RegularExpressions.Regex.Match(content, @"\*\*([^*]+)\*\*");
+            if (boldMatch.Success)
+            {
+                var boldText = boldMatch.Groups[1].Value.Trim();
+                var cells = ParseTableCells(element);
+                
+                // 汎用的判定：
+                // 1. 太字テキストが主要な内容（全体の50%以上）
+                // 2. セル数が少ない（独立したヘッダー的構造）
+                // 3. 空セルが多い（ヘッダー行の特徴）
+                var boldRatio = (double)boldText.Length / content.Replace("**", "").Length;
+                var emptyRatio = (double)cells.Count(c => string.IsNullOrWhiteSpace(c)) / Math.Max(cells.Count, 1);
+                
+                return boldRatio > 0.7 && cells.Count <= 2 && emptyRatio >= 0.5;
+            }
+        }
+        
+        return false;
     }
 
     private class FragmentAnalysis

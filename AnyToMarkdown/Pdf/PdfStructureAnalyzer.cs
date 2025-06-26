@@ -263,9 +263,9 @@ internal class PdfStructureAnalyzer
             return true;
         }
         
-        // "基本的な"、"空欄を含む"などの修飾詞＋名詞パターン
-        if (System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}な.{1,10}$") ||
-            System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}を含む.{1,10}$"))
+        // 汎用的な修飾詞＋名詞パターン（日本語の典型的な見出し構造）
+        if (System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[なのが].{1,10}$") ||
+            System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[をにで].{1,8}.{1,10}$"))
         {
             return true;
         }
@@ -458,7 +458,7 @@ internal class PdfStructureAnalyzer
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
         
-        // 太字を含むテキストをヘッダー候補とする（文字数に依存しない）
+        // 太字を含むテキストをヘッダー候補とする（汎用的アプローチ）
         if (text.Contains("**"))
         {
             // リストアイテムのマーカーは除外
@@ -467,21 +467,29 @@ internal class PdfStructureAnalyzer
             // 数字リストの項目は除外
             if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+\.\s*\*\*")) return false;
             
-            // 完全な文（句点で終わる）は除外
-            var cleanText = text.Replace("**", "").Trim();
-            if (cleanText.EndsWith("。") || cleanText.EndsWith(".")) return false;
+            // 太字部分を抽出
+            var boldMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\*\*([^*]+)\*\*");
+            if (boldMatches.Count == 0) return false;
             
-            // 日本語の項目マーカーは除外
-            if (cleanText.StartsWith("•") || cleanText.StartsWith("‒")) return false;
+            var boldText = boldMatches[0].Groups[1].Value.Trim();
             
-            // 数字パターンを含む太字テキストで、かつセクション番号形式
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\*\*\d+(\.\d+)*[\.\s]"))
+            // 汎用的な判定条件：
+            // 1. 短いテキスト（20文字以下）
+            // 2. 文の終了形ではない（句点で終わらない）
+            // 3. 単一の概念を表現（スペースが少ない）
+            if (boldText.Length <= 20 && 
+                !boldText.EndsWith("。") && !boldText.EndsWith(".") &&
+                boldText.Split(' ').Length <= 4)
             {
-                return true;
+                // テーブル構造内の単語ではない（パイプがない）
+                if (!text.Contains("|"))
+                {
+                    return true;
+                }
             }
             
-            // 明確なセクションタイトルパターン（数字以外の見出し）
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\*\*[^\d\*\s][^\*]*\*\*$"))
+            // 数字パターンを含む構造的見出し
+            if (System.Text.RegularExpressions.Regex.IsMatch(boldText, @"^\d+(\.\d+)*[\.\s]"))
             {
                 return true;
             }
@@ -1413,10 +1421,10 @@ internal class PdfStructureAnalyzer
         // 短い名詞句パターン（テーブルヘッダーなど）
         bool isShortNounPhrase = cleanText.Length <= 15 && !cleanText.Contains(" ") && !cleanText.All(char.IsDigit);
         
-        // "基本的な〜"、"〜を含む〜"パターン
-        bool isDescriptivePhrase = System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[なの].{1,10}$") ||
-                                  System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}を含む.{1,10}$") ||
-                                  System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[なの].{1,8}[ーテ].{1,5}$");
+        // 汎用的な記述句パターン（日本語の見出し特徴）
+        bool isDescriptivePhrase = System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[なのが].{1,10}$") ||
+                                  System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[をにで].{1,8}.{1,10}$") ||
+                                  System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^.{1,8}[なの].{1,8}[ーテル].{1,5}$");
         
         // 前後の要素との関係を考慮
         bool hasSpaceBefore = previous == null || previous.Type != ElementType.Paragraph;
