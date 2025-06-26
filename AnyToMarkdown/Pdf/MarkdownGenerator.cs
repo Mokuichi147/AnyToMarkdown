@@ -320,8 +320,11 @@ internal static class MarkdownGenerator
         var maxColumns = 0;
         var allCells = new List<List<string>>();
 
-        // 複数行セルの検出と統合
-        var processedCells = ProcessMultiRowCells(tableRows);
+        // テーブル全体の座標分析による一貫した列境界の決定
+        var columnBoundaries = AnalyzeTableColumnBoundaries(tableRows);
+        
+        // 複数行セルの検出と統合（一貫した列境界を使用）
+        var processedCells = ProcessMultiRowCellsWithBoundaries(tableRows, columnBoundaries);
         
         // 各行をセルに分割（改良版）
         foreach (var cells in processedCells)
@@ -446,6 +449,9 @@ internal static class MarkdownGenerator
             return SplitTextIntoCells(text);
         }
 
+        // 単一行での境界分析はスキップ（効果的でないため）
+        // 複数行のテーブル解析はGenerateMarkdownTableで処理される
+
         // 単語間のギャップを計算
         var gaps = new List<double>();
         for (int i = 1; i < words.Count; i++)
@@ -507,8 +513,13 @@ internal static class MarkdownGenerator
         for (int i = 1; i < words.Count; i++)
         {
             var gap = words[i].BoundingBox.Left - words[i-1].BoundingBox.Right;
+            var prevWord = words[i-1];
+            var currentWord = words[i];
             
-            if (gap > threshold)
+            // 文字種変化点の検出（数字⇔文字の境界）
+            var hasCharacterTypeChange = HasSignificantCharacterTypeChange(prevWord.Text, currentWord.Text);
+            
+            if (gap > threshold || (hasCharacterTypeChange && gap > minThreshold * 0.5))
             {
                 // セル境界
                 var cellText = string.Join("", currentCell.Select(w => w.Text)).Trim();
@@ -539,6 +550,488 @@ internal static class MarkdownGenerator
         }
 
         return cells;
+    }
+    
+    private static bool HasSignificantCharacterTypeChange(string prevText, string currentText)
+    {
+        if (string.IsNullOrEmpty(prevText) || string.IsNullOrEmpty(currentText))
+            return false;
+        
+        // 前の単語と現在の単語の文字種を分析
+        var prevIsNumeric = prevText.Any(char.IsDigit);
+        var currentIsNumeric = currentText.Any(char.IsDigit);
+        
+        var prevIsAlpha = prevText.Any(c => char.IsLetter(c) || IsJapaneseCharacter(c));
+        var currentIsAlpha = currentText.Any(c => char.IsLetter(c) || IsJapaneseCharacter(c));
+        
+        // 数字から文字へ、または文字から数字への変化
+        if ((prevIsNumeric && !prevIsAlpha) && (currentIsAlpha && !currentIsNumeric))
+            return true;
+        
+        if ((prevIsAlpha && !prevIsNumeric) && (currentIsNumeric && !currentIsAlpha))
+            return true;
+        
+        return false;
+    }
+    
+    private static bool IsJapaneseCharacter(char c)
+    {
+        // ひらがな、カタカナ、漢字の判定
+        return (c >= '\u3040' && c <= '\u309F') || // ひらがな
+               (c >= '\u30A0' && c <= '\u30FF') || // カタカナ
+               (c >= '\u4E00' && c <= '\u9FFF');   // 漢字
+    }
+    
+    // 列配置分析のためのクラス定義
+    private class ColumnAlignmentAnalysis
+    {
+        public List<ColumnInfo> Columns { get; set; } = new List<ColumnInfo>();
+        public double OverallConsistency { get; set; }
+    }
+    
+    private class ColumnInfo
+    {
+        public double LeftBoundary { get; set; }
+        public double RightBoundary { get; set; }
+        public ColumnAlignment AlignmentType { get; set; }
+        public double AlignmentConsistency { get; set; }
+        public List<WordGroup> WordGroups { get; set; } = new List<WordGroup>();
+    }
+    
+    private class WordGroup
+    {
+        public List<UglyToad.PdfPig.Content.Word> Words { get; set; } = new List<UglyToad.PdfPig.Content.Word>();
+        public double LeftPosition { get; set; }
+        public double RightPosition { get; set; }
+        public double CenterPosition { get; set; }
+        public int RowIndex { get; set; }
+    }
+    
+    private enum ColumnAlignment
+    {
+        Left,
+        Center,
+        Right,
+        Mixed
+    }
+    
+    private static ColumnAlignmentAnalysis AnalyzeColumnAlignments(List<DocumentElement> tableRows)
+    {
+        var analysis = new ColumnAlignmentAnalysis();
+        
+        try
+        {
+            // 各行の単語グループを抽出
+            var rowWordGroups = new List<List<WordGroup>>();
+            
+            for (int rowIndex = 0; rowIndex < tableRows.Count; rowIndex++)
+            {
+                var row = tableRows[rowIndex];
+                if (row.Words == null || row.Words.Count == 0) continue;
+                
+                var wordGroups = ExtractWordGroupsFromRow(row.Words, rowIndex);
+                rowWordGroups.Add(wordGroups);
+            }
+            
+            if (rowWordGroups.Count < 2) return analysis;
+            
+            // 列数の推定（最も一般的な列数を採用）
+            var columnCounts = rowWordGroups.Select(groups => groups.Count).ToList();
+            var mostCommonColumnCount = columnCounts.GroupBy(c => c)
+                .OrderByDescending(g => g.Count())
+                .First().Key;
+            
+            // 各列の配置パターンを分析
+            for (int colIndex = 0; colIndex < mostCommonColumnCount; colIndex++)
+            {
+                var columnInfo = AnalyzeColumnAlignment(rowWordGroups, colIndex);
+                if (columnInfo != null)
+                {
+                    analysis.Columns.Add(columnInfo);
+                }
+            }
+            
+            // 全体の一貫性を計算
+            analysis.OverallConsistency = analysis.Columns.Count > 0 
+                ? analysis.Columns.Average(col => col.AlignmentConsistency)
+                : 0.0;
+        }
+        catch
+        {
+            // 分析失敗
+        }
+        
+        return analysis;
+    }
+    
+    private static List<WordGroup> ExtractWordGroupsFromRow(List<UglyToad.PdfPig.Content.Word> words, int rowIndex)
+    {
+        var groups = new List<WordGroup>();
+        var currentGroup = new List<UglyToad.PdfPig.Content.Word>();
+        
+        // 単語間のギャップで分割
+        var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
+        var avgFontSize = words.Average(w => w.BoundingBox.Height);
+        var gapThreshold = avgFontSize * 1.2; // より保守的な閾値
+        
+        currentGroup.Add(sortedWords[0]);
+        
+        for (int i = 1; i < sortedWords.Count; i++)
+        {
+            var gap = sortedWords[i].BoundingBox.Left - sortedWords[i-1].BoundingBox.Right;
+            
+            if (gap > gapThreshold)
+            {
+                // グループ完成
+                if (currentGroup.Count > 0)
+                {
+                    groups.Add(CreateWordGroup(currentGroup, rowIndex));
+                    currentGroup.Clear();
+                }
+            }
+            
+            currentGroup.Add(sortedWords[i]);
+        }
+        
+        // 最後のグループを追加
+        if (currentGroup.Count > 0)
+        {
+            groups.Add(CreateWordGroup(currentGroup, rowIndex));
+        }
+        
+        return groups;
+    }
+    
+    private static WordGroup CreateWordGroup(List<UglyToad.PdfPig.Content.Word> words, int rowIndex)
+    {
+        var leftMost = words.Min(w => w.BoundingBox.Left);
+        var rightMost = words.Max(w => w.BoundingBox.Right);
+        
+        return new WordGroup
+        {
+            Words = new List<UglyToad.PdfPig.Content.Word>(words),
+            LeftPosition = leftMost,
+            RightPosition = rightMost,
+            CenterPosition = (leftMost + rightMost) / 2,
+            RowIndex = rowIndex
+        };
+    }
+    
+    private static ColumnInfo? AnalyzeColumnAlignment(List<List<WordGroup>> rowWordGroups, int columnIndex)
+    {
+        // 指定された列インデックスの単語グループを収集
+        var columnGroups = new List<WordGroup>();
+        
+        foreach (var rowGroups in rowWordGroups)
+        {
+            if (columnIndex < rowGroups.Count)
+            {
+                columnGroups.Add(rowGroups[columnIndex]);
+            }
+        }
+        
+        if (columnGroups.Count < 2) return null;
+        
+        // 列の境界を決定
+        var leftBoundary = columnGroups.Min(g => g.LeftPosition);
+        var rightBoundary = columnGroups.Max(g => g.RightPosition);
+        var columnWidth = rightBoundary - leftBoundary;
+        
+        // 配置パターンを分析
+        var alignmentType = DetermineAlignmentType(columnGroups, leftBoundary, rightBoundary);
+        var consistency = CalculateAlignmentConsistency(columnGroups, alignmentType, leftBoundary, rightBoundary);
+        
+        return new ColumnInfo
+        {
+            LeftBoundary = leftBoundary,
+            RightBoundary = rightBoundary,
+            AlignmentType = alignmentType,
+            AlignmentConsistency = consistency,
+            WordGroups = columnGroups
+        };
+    }
+    
+    private static ColumnAlignment DetermineAlignmentType(List<WordGroup> groups, double leftBoundary, double rightBoundary)
+    {
+        var columnWidth = rightBoundary - leftBoundary;
+        var tolerance = columnWidth * 0.1; // 10%の許容範囲
+        
+        // 左寄せ判定
+        var leftAlignedCount = groups.Count(g => Math.Abs(g.LeftPosition - leftBoundary) <= tolerance);
+        
+        // 右寄せ判定
+        var rightAlignedCount = groups.Count(g => Math.Abs(g.RightPosition - rightBoundary) <= tolerance);
+        
+        // 中央寄せ判定
+        var centerPosition = (leftBoundary + rightBoundary) / 2;
+        var centerAlignedCount = groups.Count(g => Math.Abs(g.CenterPosition - centerPosition) <= tolerance);
+        
+        var totalGroups = groups.Count;
+        var threshold = totalGroups * 0.5; // 50%以上で判定（より寛容）
+        
+        if (leftAlignedCount >= threshold) return ColumnAlignment.Left;
+        if (rightAlignedCount >= threshold) return ColumnAlignment.Right;
+        if (centerAlignedCount >= threshold) return ColumnAlignment.Center;
+        
+        return ColumnAlignment.Mixed;
+    }
+    
+    private static double CalculateAlignmentConsistency(List<WordGroup> groups, ColumnAlignment alignmentType, 
+        double leftBoundary, double rightBoundary)
+    {
+        if (groups.Count == 0) return 0.0;
+        
+        var consistentCount = 0;
+        var columnWidth = rightBoundary - leftBoundary;
+        var tolerance = columnWidth * 0.2; // 20%の許容範囲（より寛容）
+        
+        foreach (var group in groups)
+        {
+            var isConsistent = alignmentType switch
+            {
+                ColumnAlignment.Left => Math.Abs(group.LeftPosition - leftBoundary) <= tolerance,
+                ColumnAlignment.Right => Math.Abs(group.RightPosition - rightBoundary) <= tolerance,
+                ColumnAlignment.Center => Math.Abs(group.CenterPosition - (leftBoundary + rightBoundary) / 2) <= tolerance,
+                _ => false
+            };
+            
+            if (isConsistent) consistentCount++;
+        }
+        
+        return (double)consistentCount / groups.Count;
+    }
+    
+    private static double CalculateColumnBoundary(ColumnInfo currentCol, ColumnInfo nextCol)
+    {
+        // 列の配置タイプに基づいて境界を計算
+        return currentCol.AlignmentType switch
+        {
+            ColumnAlignment.Left => (currentCol.RightBoundary + nextCol.LeftBoundary) / 2,
+            ColumnAlignment.Right => (currentCol.RightBoundary + nextCol.LeftBoundary) / 2,
+            ColumnAlignment.Center => (currentCol.RightBoundary + nextCol.LeftBoundary) / 2,
+            _ => (currentCol.RightBoundary + nextCol.LeftBoundary) / 2
+        };
+    }
+    
+    private static List<double> AnalyzeTableColumnBoundaries(List<DocumentElement> tableRows)
+    {
+        var boundaries = new List<double>();
+        
+        try
+        {
+            // 列配置パターン分析によるグループ化
+            var columnAnalysis = AnalyzeColumnAlignments(tableRows);
+            
+            if (columnAnalysis.Columns.Count > 0)
+            {
+                // より寛容な閾値で配置統一性を評価（より多くの列を有効とする）
+                var validColumns = columnAnalysis.Columns
+                    .Where(col => col.AlignmentConsistency > 0.5) // 50%以上の一貫性（寛容）
+                    .OrderBy(col => col.LeftBoundary)
+                    .ToList();
+                
+                if (validColumns.Count > 1)
+                {
+                    // 列間の境界を計算
+                    for (int i = 0; i < validColumns.Count - 1; i++)
+                    {
+                        var currentCol = validColumns[i];
+                        var nextCol = validColumns[i + 1];
+                        
+                        // 配置タイプに基づいて境界を決定
+                        var boundary = CalculateColumnBoundary(currentCol, nextCol);
+                        boundaries.Add(boundary);
+                    }
+                }
+            }
+            
+            // フォールバック：従来の方法
+            if (boundaries.Count == 0)
+            {
+                var allWords = new List<UglyToad.PdfPig.Content.Word>();
+                foreach (var row in tableRows)
+                {
+                    if (row.Words != null)
+                    {
+                        allWords.AddRange(row.Words);
+                    }
+                }
+                
+                if (allWords.Count >= 3)
+                {
+                    var leftPositions = allWords.Select(w => w.BoundingBox.Left).OrderBy(x => x).ToList();
+                    var clusters = ClusterPositions(leftPositions);
+                    boundaries.AddRange(clusters.Select(cluster => cluster.Average()));
+                }
+            }
+        }
+        catch
+        {
+            // 分析失敗時は空のリストを返す
+        }
+        
+        return boundaries.OrderBy(b => b).ToList();
+    }
+    
+    private static List<string> ParseTableCellsWithBoundaries(DocumentElement row, List<double> columnBoundaries)
+    {
+        var text = row.Content;
+        var words = row.Words;
+        var cells = new List<string>();
+        
+        // 境界が検出されない場合は従来の方法を使用
+        if (words == null || words.Count == 0 || columnBoundaries.Count < 1)
+        {
+            return SplitTextIntoCells(text);
+        }
+        
+        // 列境界に基づいて単語をセルにグループ化
+        var cellGroups = new List<List<UglyToad.PdfPig.Content.Word>>();
+        for (int i = 0; i <= columnBoundaries.Count; i++)
+        {
+            cellGroups.Add(new List<UglyToad.PdfPig.Content.Word>());
+        }
+        
+        foreach (var word in words)
+        {
+            var cellIndex = DetermineCellIndex(word.BoundingBox.Left, columnBoundaries);
+            cellGroups[cellIndex].Add(word);
+        }
+        
+        // 各セルグループからテキストを生成
+        foreach (var group in cellGroups)
+        {
+            if (group.Count > 0)
+            {
+                var cellText = string.Join("", group.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text)).Trim();
+                cells.Add(cellText);
+            }
+            else
+            {
+                cells.Add(""); // 空のセル
+            }
+        }
+        
+        // 末尾の空セルを除去
+        while (cells.Count > 0 && string.IsNullOrWhiteSpace(cells.Last()))
+        {
+            cells.RemoveAt(cells.Count - 1);
+        }
+        
+        return cells;
+    }
+    
+    private static List<List<double>> ClusterPositions(List<double> positions)
+    {
+        var clusters = new List<List<double>>();
+        if (positions.Count == 0) return clusters;
+        
+        // 重複を除去してソート
+        var uniquePositions = positions.Distinct().OrderBy(p => p).ToList();
+        if (uniquePositions.Count < 2) return clusters;
+        
+        var currentCluster = new List<double> { uniquePositions[0] };
+        var threshold = 25.0; // より大きな閾値で列を統合
+        
+        for (int i = 1; i < uniquePositions.Count; i++)
+        {
+            if (uniquePositions[i] - uniquePositions[i-1] <= threshold)
+            {
+                currentCluster.Add(uniquePositions[i]);
+            }
+            else
+            {
+                if (currentCluster.Count >= 3) // より多くの単語が必要
+                {
+                    clusters.Add(currentCluster);
+                }
+                currentCluster = new List<double> { uniquePositions[i] };
+            }
+        }
+        
+        if (currentCluster.Count >= 3)
+        {
+            clusters.Add(currentCluster);
+        }
+        
+        // 列数を現実的な範囲に制限（3-5列）
+        if (clusters.Count > 5)
+        {
+            clusters = clusters.Take(4).ToList();
+        }
+        
+        return clusters;
+    }
+    
+    private static List<List<string>> ProcessMultiRowCellsWithBoundaries(List<DocumentElement> tableRows, List<double> columnBoundaries)
+    {
+        var allCells = new List<List<string>>();
+        
+        foreach (var row in tableRows)
+        {
+            var cells = ParseTableCellsWithBoundaries(row, columnBoundaries);
+            allCells.Add(cells);
+        }
+        
+        // 元のProcessMultiRowCellsの複数行統合ロジックを適用
+        if (allCells.Count <= 1) return allCells;
+        
+        var mergedCells = new List<List<string>>();
+        var i = 0;
+        
+        while (i < allCells.Count)
+        {
+            var currentRow = allCells[i];
+            var mergedRow = new List<string>(currentRow);
+            
+            // 次の行との統合可能性をチェック
+            if (i + 1 < allCells.Count)
+            {
+                var nextRow = allCells[i + 1];
+                if (ShouldMergeRows(currentRow, nextRow))
+                {
+                    for (int j = 0; j < Math.Min(mergedRow.Count, nextRow.Count); j++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(nextRow[j]))
+                        {
+                            if (string.IsNullOrWhiteSpace(mergedRow[j]))
+                            {
+                                mergedRow[j] = nextRow[j];
+                            }
+                            else
+                            {
+                                mergedRow[j] += "<br>" + nextRow[j];
+                            }
+                        }
+                    }
+                    i += 2;
+                }
+                else
+                {
+                    i++;
+                }
+            }
+            else
+            {
+                i++;
+            }
+            
+            mergedCells.Add(mergedRow);
+        }
+        
+        return mergedCells;
+    }
+    
+    private static int DetermineCellIndex(double position, List<double> columnBoundaries)
+    {
+        for (int i = 0; i < columnBoundaries.Count; i++)
+        {
+            if (position < columnBoundaries[i])
+            {
+                return i;
+            }
+        }
+        return columnBoundaries.Count; // 最後の列
     }
     
 
@@ -620,8 +1113,8 @@ internal static class MarkdownGenerator
             
             foreach (var candidate in candidates)
             {
-                // 汎用的な独立要素判定（数値、年度、記号パターン）
-                if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d+$|^\d{4}年|^\+?\-?\d+\.?\d*%?$|^[A-Z]\d+$"))
+                // 数値のみでセル分割（ハードコードパターン除去）
+                if (candidate.All(char.IsDigit) && candidate.Length <= 3)
                 {
                     if (currentGroup.Count > 0)
                     {
