@@ -70,7 +70,7 @@ internal class PdfStructureAnalyzer
         {
             var text = w.Text?.Trim();
             return !string.IsNullOrEmpty(text) && 
-                   text.Length > 3 && 
+                   text!.Length > 3 && 
                    !text.All(char.IsDigit) &&
                    !(text.StartsWith("#") || text.StartsWith("-") || text.StartsWith("*"));
         }).ToList();
@@ -335,39 +335,42 @@ internal class PdfStructureAnalyzer
         text = text.Replace("￿", "").Replace("\uFFFD", "").Trim();
         if (string.IsNullOrEmpty(text)) return false;
         
-        var parts = text.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2) return false;
+        // 最低限の単語数要件
+        if (words == null || words.Count < 2) return false;
 
         // パイプ文字がある（既にMarkdownテーブル）
         if (text.Contains("|")) return true;
 
-        // 数値密度による表判定（言語・ドメイン非依存）
-        var digitRatio = (double)text.Count(char.IsDigit) / text.Length;
-        if (digitRatio > 0.2 && parts.Length >= 2) return true;
-
-        // 数値の比率が高い場合
-        int numericParts = parts.Count(p => double.TryParse(p.Replace(",", ""), out _) || 
-            p.Contains("%") || p.Contains(",") || System.Text.RegularExpressions.Regex.IsMatch(p, @"^\+?-?\d+\.?\d*$"));
-        if (parts.Length >= 3 && (double)numericParts / parts.Length > 0.4) return true;
-
-        // 単語間の距離による判定（最も重要な指標）
-        if (words != null && words.Count >= 3)
+        // 純粋な座標ベースの判定 - 単語間の距離分析
+        var gaps = new List<double>();
+        for (int i = 1; i < words.Count; i++)
         {
-            var gaps = new List<double>();
-            for (int i = 1; i < words.Count; i++)
-            {
-                gaps.Add(words[i].BoundingBox.Left - words[i-1].BoundingBox.Right);
-            }
-            
-            if (gaps.Count >= 2)
-            {
-                var avgGap = gaps.Average();
-                var largeGaps = gaps.Count(g => g > Math.Max(avgGap * 1.5, 20));
-                
-                // 大きなギャップが複数ある場合
-                if (largeGaps >= 2) return true;
-            }
+            gaps.Add(words[i].BoundingBox.Left - words[i-1].BoundingBox.Right);
         }
+        
+        if (gaps.Count == 0) return false;
+
+        // フォントサイズに基づく動的閾値設定
+        var avgFontSize = words.Average(w => w.BoundingBox.Height);
+        var fontBasedThreshold = avgFontSize * 0.8;
+        
+        // 統計的ギャップ分析
+        var sortedGaps = gaps.OrderBy(g => g).ToList();
+        var avgGap = gaps.Average();
+        var maxGap = gaps.Max();
+        
+        // 四分位数による閾値設定
+        var q3 = sortedGaps.Count > 3 ? sortedGaps[(int)(sortedGaps.Count * 0.75)] : avgGap;
+        
+        // テーブルセル境界を示す有意なギャップの検出
+        var significantThreshold = Math.Max(q3, fontBasedThreshold);
+        var significantGaps = gaps.Count(g => g > significantThreshold);
+        
+        // 複数の有意なギャップがある場合（列分離の証拠）
+        if (significantGaps >= 1) return true;
+        
+        // または明らかに大きなギャップが存在する場合
+        if (maxGap > avgFontSize * 2) return true;
 
         return false;
     }
@@ -403,7 +406,7 @@ internal class PdfStructureAnalyzer
                                 
             if (fontNames.Count > 0)
             {
-                var dominantFont = fontNames.First().Key.ToLower();
+                var dominantFont = fontNames.First().Key?.ToLower() ?? "";
                 // 一般的なモノスペースフォント名
                 var monospaceFonts = new[] { "courier", "consolas", "monaco", "menlo", "source code", "dejavu sans mono", "liberation mono", "ubuntu mono" };
                 if (monospaceFonts.Any(font => dominantFont.Contains(font))) return true;
@@ -709,6 +712,618 @@ internal class PdfStructureAnalyzer
         return gaps.Average();
     }
 
+    private static (List<LineSegment> horizontalLines, List<LineSegment> verticalLines, List<UglyToad.PdfPig.Core.PdfRectangle> rectangles) ExtractLinesFromPaths(IEnumerable<object> paths)
+    {
+        var horizontalLines = new List<LineSegment>();
+        var verticalLines = new List<LineSegment>();
+        var rectangles = new List<UglyToad.PdfPig.Core.PdfRectangle>();
+        
+        try
+        {
+            foreach (var path in paths)
+            {
+                // パス情報から線とエクスタンスを抽出
+                var pathInfo = AnalyzePath(path);
+                
+                // 水平線の検出（Y座標が同じで、X座標が異なる）
+                var horizontalPathLines = pathInfo.lines.Where(line => 
+                    Math.Abs(line.From.Y - line.To.Y) < 2.0 && 
+                    Math.Abs(line.From.X - line.To.X) > 10.0);
+                
+                // 垂直線の検出（X座標が同じで、Y座標が異なる）
+                var verticalPathLines = pathInfo.lines.Where(line => 
+                    Math.Abs(line.From.X - line.To.X) < 2.0 && 
+                    Math.Abs(line.From.Y - line.To.Y) > 10.0);
+                
+                horizontalLines.AddRange(horizontalPathLines);
+                verticalLines.AddRange(verticalPathLines);
+                rectangles.AddRange(pathInfo.rectangles);
+            }
+        }
+        catch
+        {
+            // パス解析に失敗した場合は空のリストを返す
+        }
+        
+        return (horizontalLines, verticalLines, rectangles);
+    }
+    
+    private static (List<LineSegment> lines, List<UglyToad.PdfPig.Core.PdfRectangle> rectangles) AnalyzePath(object path)
+    {
+        var lines = new List<LineSegment>();
+        var rectangles = new List<UglyToad.PdfPig.Core.PdfRectangle>();
+        
+        try
+        {
+            // PdfPigのパス情報からライン要素を抽出
+            // 実際の実装はPdfPigのAPIに依存するため、
+            // ここでは汎用的な座標ベースの線検出を行う
+            
+            // パスオブジェクトの型とプロパティを動的に解析
+            var pathType = path.GetType();
+            
+            // パスの座標情報を取得（リフレクションを使用）
+            var commands = GetPathCommands(path);
+            if (commands != null)
+            {
+                var currentPoint = new UglyToad.PdfPig.Core.PdfPoint(0, 0);
+                
+                for (int i = 0; i < commands.Count - 1; i++)
+                {
+                    var cmd1 = commands[i];
+                    var cmd2 = commands[i + 1];
+                    
+                    // 線分の検出
+                    if (IsLineCommand(cmd1, cmd2))
+                    {
+                        var lineSegment = CreateLineSegment(cmd1, cmd2);
+                        if (lineSegment != null)
+                        {
+                            lines.Add(lineSegment);
+                        }
+                    }
+                    
+                    // 矩形の検出
+                    if (IsRectanglePattern(commands, i))
+                    {
+                        var rectangle = CreateRectangle(commands, i);
+                        if (rectangle.HasValue)
+                        {
+                            rectangles.Add(rectangle.Value);
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // パス解析失敗時は空のリストを返す
+        }
+        
+        return (lines, rectangles);
+    }
+    
+    private static List<object>? GetPathCommands(object path)
+    {
+        try
+        {
+            // パスオブジェクトからコマンドリストを取得
+            // 実際の実装はPdfPigのAPIに応じて調整
+            var commandsProperty = path.GetType().GetProperty("Commands");
+            return commandsProperty?.GetValue(path) as List<object>;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+    
+    private static bool IsLineCommand(object cmd1, object cmd2)
+    {
+        // 線描画コマンドかどうかを判定
+        try
+        {
+            var type1 = cmd1.GetType().Name;
+            var type2 = cmd2.GetType().Name;
+            
+            // MoveTo → LineTo パターン
+            return (type1.Contains("Move") && type2.Contains("Line")) ||
+                   (type1.Contains("Line") && type2.Contains("Line"));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+    
+    private static LineSegment? CreateLineSegment(object cmd1, object cmd2)
+    {
+        try
+        {
+            var point1 = GetCommandPoint(cmd1);
+            var point2 = GetCommandPoint(cmd2);
+            
+            if (point1.HasValue && point2.HasValue)
+            {
+                return new LineSegment
+                {
+                    From = point1.Value,
+                    To = point2.Value,
+                    Thickness = 1.0
+                };
+            }
+        }
+        catch
+        {
+            // 線セグメント作成失敗
+        }
+        
+        return null;
+    }
+    
+    private static UglyToad.PdfPig.Core.PdfPoint? GetCommandPoint(object command)
+    {
+        try
+        {
+            var xProperty = command.GetType().GetProperty("X");
+            var yProperty = command.GetType().GetProperty("Y");
+            
+            if (xProperty != null && yProperty != null)
+            {
+                var x = Convert.ToDouble(xProperty.GetValue(command));
+                var y = Convert.ToDouble(yProperty.GetValue(command));
+                return new UglyToad.PdfPig.Core.PdfPoint(x, y);
+            }
+        }
+        catch
+        {
+            // ポイント取得失敗
+        }
+        
+        return null;
+    }
+    
+    private static bool IsRectanglePattern(List<object> commands, int startIndex)
+    {
+        // 矩形パターンの検出（4つの線で構成される閉じた図形）
+        if (startIndex + 4 >= commands.Count) return false;
+        
+        try
+        {
+            var points = new List<UglyToad.PdfPig.Core.PdfPoint>();
+            for (int i = 0; i < 5 && startIndex + i < commands.Count; i++)
+            {
+                var point = GetCommandPoint(commands[startIndex + i]);
+                if (point.HasValue)
+                {
+                    points.Add(point.Value);
+                }
+            }
+            
+            // 4つの角が矩形を形成するかチェック
+            return points.Count >= 4 && IsRectangleShape(points);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+    
+    private static UglyToad.PdfPig.Core.PdfRectangle? CreateRectangle(List<object> commands, int startIndex)
+    {
+        try
+        {
+            var points = new List<UglyToad.PdfPig.Core.PdfPoint>();
+            for (int i = 0; i < 4 && startIndex + i < commands.Count; i++)
+            {
+                var point = GetCommandPoint(commands[startIndex + i]);
+                if (point.HasValue)
+                {
+                    points.Add(point.Value);
+                }
+            }
+            
+            if (points.Count >= 4)
+            {
+                var minX = points.Min(p => p.X);
+                var maxX = points.Max(p => p.X);
+                var minY = points.Min(p => p.Y);
+                var maxY = points.Max(p => p.Y);
+                
+                return new UglyToad.PdfPig.Core.PdfRectangle(minX, minY, maxX, maxY);
+            }
+        }
+        catch
+        {
+            // 矩形作成失敗
+        }
+        
+        return null;
+    }
+    
+    private static bool IsRectangleShape(List<UglyToad.PdfPig.Core.PdfPoint> points)
+    {
+        if (points.Count < 4) return false;
+        
+        try
+        {
+            // 矩形の特徴：対角の点が等しい距離にある
+            var distinctX = points.Select(p => Math.Round(p.X, 1)).Distinct().Count();
+            var distinctY = points.Select(p => Math.Round(p.Y, 1)).Distinct().Count();
+            
+            // 2つの異なるX座標と2つの異なるY座標を持つ
+            return distinctX == 2 && distinctY == 2;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+    
+    private static List<TablePattern> AnalyzeTablePatterns(List<LineSegment> horizontalLines, List<LineSegment> verticalLines, List<UglyToad.PdfPig.Core.PdfRectangle> rectangles)
+    {
+        var patterns = new List<TablePattern>();
+        
+        try
+        {
+            // 線の密度が高い領域を特定
+            var tableAreas = IdentifyTableAreas(horizontalLines, verticalLines);
+            
+            foreach (var area in tableAreas)
+            {
+                var pattern = AnalyzeSingleTablePattern(area, horizontalLines, verticalLines, rectangles);
+                if (pattern != null)
+                {
+                    patterns.Add(pattern);
+                }
+            }
+            
+            // 矩形からも表パターンを検出
+            foreach (var rectangle in rectangles)
+            {
+                var rectPattern = AnalyzeRectangleTablePattern(rectangle, horizontalLines, verticalLines);
+                if (rectPattern != null)
+                {
+                    patterns.Add(rectPattern);
+                }
+            }
+        }
+        catch
+        {
+            // パターン分析失敗時は空のリストを返す
+        }
+        
+        return patterns;
+    }
+    
+    private static List<UglyToad.PdfPig.Core.PdfRectangle> IdentifyTableAreas(List<LineSegment> horizontalLines, List<LineSegment> verticalLines)
+    {
+        var areas = new List<UglyToad.PdfPig.Core.PdfRectangle>();
+        
+        try
+        {
+            // 線の交点と密度を分析して表領域を特定
+            var intersections = FindLineIntersections(horizontalLines, verticalLines);
+            
+            if (intersections.Count >= 4) // 最低4つの交点で矩形を形成
+            {
+                var clusteredAreas = ClusterIntersectionsIntoAreas(intersections);
+                areas.AddRange(clusteredAreas);
+            }
+        }
+        catch
+        {
+            // 領域特定失敗
+        }
+        
+        return areas;
+    }
+    
+    private static List<UglyToad.PdfPig.Core.PdfPoint> FindLineIntersections(List<LineSegment> horizontalLines, List<LineSegment> verticalLines)
+    {
+        var intersections = new List<UglyToad.PdfPig.Core.PdfPoint>();
+        
+        foreach (var hLine in horizontalLines)
+        {
+            foreach (var vLine in verticalLines)
+            {
+                var intersection = CalculateIntersection(hLine, vLine);
+                if (intersection.HasValue)
+                {
+                    intersections.Add(intersection.Value);
+                }
+            }
+        }
+        
+        return intersections;
+    }
+    
+    private static UglyToad.PdfPig.Core.PdfPoint? CalculateIntersection(LineSegment horizontal, LineSegment vertical)
+    {
+        try
+        {
+            // 水平線と垂直線の交点を計算
+            var hY = (horizontal.From.Y + horizontal.To.Y) / 2;
+            var vX = (vertical.From.X + vertical.To.X) / 2;
+            
+            // 交点が両方の線分の範囲内にあるかチェック
+            var hMinX = Math.Min(horizontal.From.X, horizontal.To.X);
+            var hMaxX = Math.Max(horizontal.From.X, horizontal.To.X);
+            var vMinY = Math.Min(vertical.From.Y, vertical.To.Y);
+            var vMaxY = Math.Max(vertical.From.Y, vertical.To.Y);
+            
+            if (vX >= hMinX && vX <= hMaxX && hY >= vMinY && hY <= vMaxY)
+            {
+                return new UglyToad.PdfPig.Core.PdfPoint(vX, hY);
+            }
+        }
+        catch
+        {
+            // 交点計算失敗
+        }
+        
+        return null;
+    }
+    
+    private static List<UglyToad.PdfPig.Core.PdfRectangle> ClusterIntersectionsIntoAreas(List<UglyToad.PdfPig.Core.PdfPoint> intersections)
+    {
+        var areas = new List<UglyToad.PdfPig.Core.PdfRectangle>();
+        
+        try
+        {
+            if (intersections.Count < 4) return areas;
+            
+            // 交点を領域にクラスター化
+            var minX = intersections.Min(p => p.X);
+            var maxX = intersections.Max(p => p.X);
+            var minY = intersections.Min(p => p.Y);
+            var maxY = intersections.Max(p => p.Y);
+            
+            // 表領域として妥当なサイズかチェック
+            if (maxX - minX > 50 && maxY - minY > 20)
+            {
+                areas.Add(new UglyToad.PdfPig.Core.PdfRectangle(minX, minY, maxX, maxY));
+            }
+        }
+        catch
+        {
+            // クラスタリング失敗
+        }
+        
+        return areas;
+    }
+    
+    private static TablePattern? AnalyzeSingleTablePattern(UglyToad.PdfPig.Core.PdfRectangle area, List<LineSegment> horizontalLines, List<LineSegment> verticalLines, List<UglyToad.PdfPig.Core.PdfRectangle> rectangles)
+    {
+        try
+        {
+            var areaHLines = horizontalLines.Where(line => IsLineInArea(line, area)).ToList();
+            var areaVLines = verticalLines.Where(line => IsLineInArea(line, area)).ToList();
+            
+            var borderType = DetermineBorderType(areaHLines, areaVLines, area);
+            var confidence = CalculateConfidence(areaHLines, areaVLines, area);
+            
+            if (confidence > 0.3) // 信頼度閾値
+            {
+                return new TablePattern
+                {
+                    BorderType = borderType,
+                    BoundingArea = area,
+                    BorderLines = GetBorderLines(areaHLines, areaVLines, area),
+                    InternalLines = GetInternalLines(areaHLines, areaVLines, area),
+                    Confidence = confidence,
+                    EstimatedColumns = EstimateColumns(areaVLines, area),
+                    EstimatedRows = EstimateRows(areaHLines, area)
+                };
+            }
+        }
+        catch
+        {
+            // パターン分析失敗
+        }
+        
+        return null;
+    }
+    
+    private static bool IsLineInArea(LineSegment line, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        var tolerance = 5.0;
+        return line.From.X >= area.Left - tolerance && line.From.X <= area.Right + tolerance &&
+               line.From.Y >= area.Bottom - tolerance && line.From.Y <= area.Top + tolerance &&
+               line.To.X >= area.Left - tolerance && line.To.X <= area.Right + tolerance &&
+               line.To.Y >= area.Bottom - tolerance && line.To.Y <= area.Top + tolerance;
+    }
+    
+    private static TableBorderType DetermineBorderType(List<LineSegment> horizontalLines, List<LineSegment> verticalLines, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        try
+        {
+            var hasTopBorder = HasBorderLine(horizontalLines, area.Top, area.Left, area.Right, true);
+            var hasBottomBorder = HasBorderLine(horizontalLines, area.Bottom, area.Left, area.Right, true);
+            var hasLeftBorder = HasBorderLine(verticalLines, area.Left, area.Bottom, area.Top, false);
+            var hasRightBorder = HasBorderLine(verticalLines, area.Right, area.Bottom, area.Top, false);
+            
+            var borderCount = (hasTopBorder ? 1 : 0) + (hasBottomBorder ? 1 : 0) + 
+                             (hasLeftBorder ? 1 : 0) + (hasRightBorder ? 1 : 0);
+            
+            if (borderCount >= 4) return TableBorderType.FullBorder;
+            if (hasTopBorder && hasBottomBorder && !hasLeftBorder && !hasRightBorder) return TableBorderType.TopBottomOnly;
+            if (hasTopBorder && horizontalLines.Count == 1) return TableBorderType.HeaderSeparator;
+            if (horizontalLines.Count > 2 && verticalLines.Count > 2) return TableBorderType.GridLines;
+            if (borderCount > 0) return TableBorderType.PartialBorder;
+        }
+        catch
+        {
+            // 境界タイプ判定失敗
+        }
+        
+        return TableBorderType.None;
+    }
+    
+    private static bool HasBorderLine(List<LineSegment> lines, double position, double start, double end, bool isHorizontal)
+    {
+        var tolerance = 3.0;
+        
+        return lines.Any(line =>
+        {
+            if (isHorizontal)
+            {
+                return Math.Abs((line.From.Y + line.To.Y) / 2 - position) < tolerance &&
+                       Math.Min(line.From.X, line.To.X) <= start + tolerance &&
+                       Math.Max(line.From.X, line.To.X) >= end - tolerance;
+            }
+            else
+            {
+                return Math.Abs((line.From.X + line.To.X) / 2 - position) < tolerance &&
+                       Math.Min(line.From.Y, line.To.Y) <= start + tolerance &&
+                       Math.Max(line.From.Y, line.To.Y) >= end - tolerance;
+            }
+        });
+    }
+    
+    private static double CalculateConfidence(List<LineSegment> horizontalLines, List<LineSegment> verticalLines, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        try
+        {
+            var lineCount = horizontalLines.Count + verticalLines.Count;
+            var areaSize = (area.Width * area.Height) / 10000; // 正規化
+            
+            // 線の数と領域サイズに基づく信頼度
+            var lineDensity = lineCount / Math.Max(areaSize, 1);
+            var confidence = Math.Min(lineDensity / 2.0, 1.0);
+            
+            // 最低限の線数要件
+            if (lineCount < 2) confidence *= 0.5;
+            
+            return confidence;
+        }
+        catch
+        {
+            return 0.0;
+        }
+    }
+    
+    private static List<LineSegment> GetBorderLines(List<LineSegment> horizontalLines, List<LineSegment> verticalLines, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        var borderLines = new List<LineSegment>();
+        var tolerance = 5.0;
+        
+        // 境界に近い線を境界線として分類
+        borderLines.AddRange(horizontalLines.Where(line =>
+            Math.Abs((line.From.Y + line.To.Y) / 2 - area.Top) < tolerance ||
+            Math.Abs((line.From.Y + line.To.Y) / 2 - area.Bottom) < tolerance));
+            
+        borderLines.AddRange(verticalLines.Where(line =>
+            Math.Abs((line.From.X + line.To.X) / 2 - area.Left) < tolerance ||
+            Math.Abs((line.From.X + line.To.X) / 2 - area.Right) < tolerance));
+        
+        return borderLines;
+    }
+    
+    private static List<LineSegment> GetInternalLines(List<LineSegment> horizontalLines, List<LineSegment> verticalLines, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        var internalLines = new List<LineSegment>();
+        var tolerance = 5.0;
+        
+        // 境界から離れた線を内部線として分類
+        internalLines.AddRange(horizontalLines.Where(line =>
+            Math.Abs((line.From.Y + line.To.Y) / 2 - area.Top) >= tolerance &&
+            Math.Abs((line.From.Y + line.To.Y) / 2 - area.Bottom) >= tolerance));
+            
+        internalLines.AddRange(verticalLines.Where(line =>
+            Math.Abs((line.From.X + line.To.X) / 2 - area.Left) >= tolerance &&
+            Math.Abs((line.From.X + line.To.X) / 2 - area.Right) >= tolerance));
+        
+        return internalLines;
+    }
+    
+    private static int EstimateColumns(List<LineSegment> verticalLines, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        try
+        {
+            // 垂直線の位置から列数を推定
+            var columnPositions = verticalLines
+                .Select(line => (line.From.X + line.To.X) / 2)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToList();
+            
+            return Math.Max(columnPositions.Count + 1, 1);
+        }
+        catch
+        {
+            return 1;
+        }
+    }
+    
+    private static int EstimateRows(List<LineSegment> horizontalLines, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        try
+        {
+            // 水平線の位置から行数を推定
+            var rowPositions = horizontalLines
+                .Select(line => (line.From.Y + line.To.Y) / 2)
+                .Distinct()
+                .OrderBy(y => y)
+                .ToList();
+            
+            return Math.Max(rowPositions.Count + 1, 1);
+        }
+        catch
+        {
+            return 1;
+        }
+    }
+    
+    private static TablePattern? AnalyzeRectangleTablePattern(UglyToad.PdfPig.Core.PdfRectangle rectangle, List<LineSegment> horizontalLines, List<LineSegment> verticalLines)
+    {
+        try
+        {
+            // 矩形がテーブルの境界を表している可能性を分析
+            var confidence = rectangle.Width > 50 && rectangle.Height > 20 ? 0.6 : 0.3;
+            
+            return new TablePattern
+            {
+                BorderType = TableBorderType.FullBorder,
+                BoundingArea = rectangle,
+                BorderLines = CreateRectangleBorderLines(rectangle),
+                InternalLines = new List<LineSegment>(),
+                Confidence = confidence,
+                EstimatedColumns = 2, // デフォルト値
+                EstimatedRows = 2     // デフォルト値
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+    
+    private static List<LineSegment> CreateRectangleBorderLines(UglyToad.PdfPig.Core.PdfRectangle rectangle)
+    {
+        var lines = new List<LineSegment>();
+        
+        try
+        {
+            // 矩形の4辺を線セグメントとして作成
+            var topLeft = new UglyToad.PdfPig.Core.PdfPoint(rectangle.Left, rectangle.Top);
+            var topRight = new UglyToad.PdfPig.Core.PdfPoint(rectangle.Right, rectangle.Top);
+            var bottomLeft = new UglyToad.PdfPig.Core.PdfPoint(rectangle.Left, rectangle.Bottom);
+            var bottomRight = new UglyToad.PdfPig.Core.PdfPoint(rectangle.Right, rectangle.Bottom);
+            
+            lines.Add(new LineSegment { From = topLeft, To = topRight, Type = LineType.TableBorder });
+            lines.Add(new LineSegment { From = topRight, To = bottomRight, Type = LineType.TableBorder });
+            lines.Add(new LineSegment { From = bottomRight, To = bottomLeft, Type = LineType.TableBorder });
+            lines.Add(new LineSegment { From = bottomLeft, To = topLeft, Type = LineType.TableBorder });
+        }
+        catch
+        {
+            // 境界線作成失敗
+        }
+        
+        return lines;
+    }
+
     private static GraphicsInfo ExtractGraphicsInfo(Page page)
     {
         var graphicsInfo = new GraphicsInfo();
@@ -719,21 +1334,32 @@ internal class PdfStructureAnalyzer
             var verticalLines = new List<LineSegment>();
             var rectangles = new List<UglyToad.PdfPig.Core.PdfRectangle>();
             
-            // 現在のPdfPigバージョンでは直接的なパス操作が制限されるため
-            // 代替アプローチとして、ページの画像情報とWordの位置から推測する
+            // PdfPigのパス情報から実際の線要素を抽出
+            try
+            {
+                var paths = page.Paths;
+                var actualLines = ExtractLinesFromPaths(paths);
+                horizontalLines.AddRange(actualLines.horizontalLines);
+                verticalLines.AddRange(actualLines.verticalLines);
+                rectangles.AddRange(actualLines.rectangles);
+            }
+            catch
+            {
+                // パス情報の取得に失敗した場合は単語位置から推測
+                var words = page.GetWords();
+                var tableStructure = InferTableStructureFromWordPositions(words);
+                horizontalLines.AddRange(tableStructure.horizontalLines);
+                verticalLines.AddRange(tableStructure.verticalLines);
+                rectangles.AddRange(tableStructure.rectangles);
+            }
             
-            // 将来的に詳細な図形情報取得が可能になるまでの基本実装
-            var words = page.GetWords();
-            
-            // 単語の配置パターンから表構造を推測
-            var tableStructure = InferTableStructureFromWordPositions(words);
-            horizontalLines.AddRange(tableStructure.horizontalLines);
-            verticalLines.AddRange(tableStructure.verticalLines);
-            rectangles.AddRange(tableStructure.rectangles);
+            // 線のパターンから表構造を分析
+            var tablePatterns = AnalyzeTablePatterns(horizontalLines, verticalLines, rectangles);
             
             graphicsInfo.HorizontalLines = horizontalLines;
             graphicsInfo.VerticalLines = verticalLines;
             graphicsInfo.Rectangles = rectangles;
+            graphicsInfo.TablePatterns = tablePatterns;
         }
         catch
         {
@@ -908,21 +1534,21 @@ internal class PdfStructureAnalyzer
     {
         var result = new List<DocumentElement>();
         
-        // まず線情報からテーブル領域を特定
-        var tableRegions = IdentifyTableRegions(elements, graphicsInfo);
+        // 線のパターンからテーブル領域を特定（新しいアプローチ）
+        var tableRegions = IdentifyTableRegionsFromPatterns(elements, graphicsInfo);
         
         var i = 0;
         while (i < elements.Count)
         {
             var current = elements[i];
             
-            // 現在の要素がテーブル領域内にあるかチェック
+            // 現在の要素がテーブルパターン領域内にあるかチェック
             var tableRegion = tableRegions.FirstOrDefault(region => region.Contains(current));
             
             if (tableRegion != null)
             {
-                // テーブル領域内の要素をグループ化してテーブル行として処理
-                var tableElements = ProcessTableRegion(tableRegion, graphicsInfo);
+                // テーブルパターンに基づいて要素をテーブル行として処理
+                var tableElements = ProcessTableRegionWithPatterns(tableRegion, graphicsInfo);
                 result.AddRange(tableElements);
                 
                 // テーブル領域の要素数分進める
@@ -930,8 +1556,8 @@ internal class PdfStructureAnalyzer
             }
             else
             {
-                // 通常の単一要素処理
-                var tableCandidate = FindTableSequence(elements, i, graphicsInfo);
+                // フォールバック：従来の方法でテーブル検出
+                var tableCandidate = FindTableSequenceWithPatterns(elements, i, graphicsInfo);
                 
                 if (tableCandidate.Count >= 2)
                 {
@@ -997,6 +1623,164 @@ internal class PdfStructureAnalyzer
         }
 
         return new List<DocumentElement>();
+    }
+    
+    private static List<TableRegion> IdentifyTableRegionsFromPatterns(List<DocumentElement> elements, GraphicsInfo graphicsInfo)
+    {
+        var regions = new List<TableRegion>();
+        
+        try
+        {
+            // 検出されたテーブルパターンから領域を作成
+            foreach (var pattern in graphicsInfo.TablePatterns)
+            {
+                if (pattern.Confidence > 0.4) // 信頼度閾値
+                {
+                    var elementsInRegion = elements.Where(e => IsElementInTableArea(e, pattern.BoundingArea)).ToList();
+                    
+                    if (elementsInRegion.Count > 0)
+                    {
+                        var region = new TableRegion
+                        {
+                            Elements = elementsInRegion,
+                            Pattern = pattern,
+                            BoundingArea = pattern.BoundingArea
+                        };
+                        regions.Add(region);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // パターンベースの領域特定失敗
+        }
+        
+        return regions;
+    }
+    
+    private static bool IsElementInTableArea(DocumentElement element, UglyToad.PdfPig.Core.PdfRectangle area)
+    {
+        try
+        {
+            if (element.Words?.Count > 0)
+            {
+                // 要素の単語がテーブル領域内にあるかチェック
+                var elementBounds = GetElementBounds(element);
+                var tolerance = 10.0;
+                
+                return elementBounds.Left >= area.Left - tolerance &&
+                       elementBounds.Right <= area.Right + tolerance &&
+                       elementBounds.Bottom >= area.Bottom - tolerance &&
+                       elementBounds.Top <= area.Top + tolerance;
+            }
+        }
+        catch
+        {
+            // 境界チェック失敗
+        }
+        
+        return false;
+    }
+    
+    
+    private static List<DocumentElement> ProcessTableRegionWithPatterns(TableRegion region, GraphicsInfo graphicsInfo)
+    {
+        var result = new List<DocumentElement>();
+        
+        try
+        {
+            // パターンに基づいてテーブル要素を整理
+            var sortedElements = region.Elements
+                .OrderByDescending(e => GetElementY(e))
+                .ThenBy(e => GetElementX(e))
+                .ToList();
+            
+            // 各要素をテーブル行として分類
+            foreach (var element in sortedElements)
+            {
+                element.Type = ElementType.TableRow;
+                result.Add(element);
+            }
+        }
+        catch
+        {
+            // パターンベース処理失敗時は元の要素をそのまま返す
+            result.AddRange(region.Elements);
+        }
+        
+        return result;
+    }
+    
+    private static double GetElementY(DocumentElement element)
+    {
+        return element.Words?.FirstOrDefault()?.BoundingBox.Bottom ?? 0;
+    }
+    
+    private static double GetElementX(DocumentElement element)
+    {
+        return element.Words?.FirstOrDefault()?.BoundingBox.Left ?? 0;
+    }
+    
+    private static List<DocumentElement> FindTableSequenceWithPatterns(List<DocumentElement> elements, int startIndex, GraphicsInfo graphicsInfo)
+    {
+        var tableCandidate = new List<DocumentElement>();
+        
+        try
+        {
+            // 従来のロジックにパターン情報を組み合わせ
+            var currentElement = elements[startIndex];
+            var elementsInArea = new List<DocumentElement> { currentElement };
+            
+            // 近隣の要素で表を構成する可能性があるものを探す
+            for (int i = startIndex + 1; i < Math.Min(startIndex + 10, elements.Count); i++)
+            {
+                var candidate = elements[i];
+                
+                if (IsLikelyTableRow(candidate, elementsInArea, graphicsInfo))
+                {
+                    elementsInArea.Add(candidate);
+                }
+                else
+                {
+                    break;
+                }
+            }
+            
+            // 最低2行以上あればテーブルとみなす
+            if (elementsInArea.Count >= 2)
+            {
+                tableCandidate = elementsInArea;
+            }
+        }
+        catch
+        {
+            // パターンベーステーブル検出失敗
+        }
+        
+        return tableCandidate;
+    }
+    
+    private static bool IsLikelyTableRow(DocumentElement element, List<DocumentElement> existingElements, GraphicsInfo graphicsInfo)
+    {
+        try
+        {
+            // パターン情報を使用してテーブル行の可能性を判定
+            foreach (var pattern in graphicsInfo.TablePatterns)
+            {
+                if (IsElementInTableArea(element, pattern.BoundingArea))
+                {
+                    return true;
+                }
+            }
+            
+            // フォールバック：従来の判定ロジック
+            return HasSufficientBordersForTable(graphicsInfo);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool IsLikelyTableRow(DocumentElement element, GraphicsInfo graphicsInfo)
@@ -1077,7 +1861,7 @@ internal class PdfStructureAnalyzer
                 {
                     var region = new TableRegion
                     {
-                        Bounds = cell,
+                        BoundingArea = cell,
                         Elements = cellElements
                     };
                     tableRegions.Add(region);
@@ -1558,7 +2342,7 @@ internal class PdfStructureAnalyzer
                 
                 var region = new TableRegion
                 {
-                    Bounds = bounds,
+                    BoundingArea = bounds,
                     Elements = allElements
                 };
                 tableRegions.Add(region);
@@ -1611,7 +2395,7 @@ internal class PdfStructureAnalyzer
                 {
                     var tableRegion = new TableRegion
                     {
-                        Bounds = region,
+                        BoundingArea = region,
                         Elements = regionElements
                     };
                     tableRegions.Add(tableRegion);
@@ -1793,28 +2577,52 @@ internal class PdfStructureAnalyzer
     }
 }
 
-public class TableRegion
-{
-    public UglyToad.PdfPig.Core.PdfRectangle Bounds { get; set; }
-    public List<DocumentElement> Elements { get; set; } = new List<DocumentElement>();
-    
-    public bool Contains(DocumentElement element)
-    {
-        return Elements.Contains(element);
-    }
-}
 
 public class GraphicsInfo
 {
     public List<LineSegment> HorizontalLines { get; set; } = new List<LineSegment>();
     public List<LineSegment> VerticalLines { get; set; } = new List<LineSegment>();
     public List<UglyToad.PdfPig.Core.PdfRectangle> Rectangles { get; set; } = new List<UglyToad.PdfPig.Core.PdfRectangle>();
+    public List<TablePattern> TablePatterns { get; set; } = new List<TablePattern>();
 }
 
 public class LineSegment
 {
     public UglyToad.PdfPig.Core.PdfPoint From { get; set; }
     public UglyToad.PdfPig.Core.PdfPoint To { get; set; }
+    public double Thickness { get; set; } = 1.0;
+    public LineType Type { get; set; } = LineType.Unknown;
+}
+
+public class TablePattern
+{
+    public TableBorderType BorderType { get; set; }
+    public UglyToad.PdfPig.Core.PdfRectangle BoundingArea { get; set; }
+    public List<LineSegment> BorderLines { get; set; } = new List<LineSegment>();
+    public List<LineSegment> InternalLines { get; set; } = new List<LineSegment>();
+    public double Confidence { get; set; }
+    public int EstimatedColumns { get; set; }
+    public int EstimatedRows { get; set; }
+}
+
+public enum LineType
+{
+    Unknown,
+    TableBorder,
+    TableInternal,
+    HeaderSeparator,
+    RowSeparator,
+    ColumnSeparator
+}
+
+public enum TableBorderType
+{
+    None,
+    FullBorder,      // 全体を囲う
+    TopBottomOnly,   // 上下のみ
+    HeaderSeparator, // ヘッダー下のみ
+    GridLines,       // グリッド線
+    PartialBorder    // 部分的な境界
 }
 
 public class FontFormatting
@@ -1846,6 +2654,18 @@ public class DocumentElement
     public double LeftMargin { get; set; }
     public bool IsIndented { get; set; }
     public List<Word> Words { get; set; } = [];
+}
+
+public class TableRegion
+{
+    public List<DocumentElement> Elements { get; set; } = new List<DocumentElement>();
+    public TablePattern? Pattern { get; set; }
+    public UglyToad.PdfPig.Core.PdfRectangle BoundingArea { get; set; }
+    
+    public bool Contains(DocumentElement element)
+    {
+        return Elements.Contains(element);
+    }
 }
 
 public enum ElementType

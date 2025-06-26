@@ -338,6 +338,10 @@ internal static class MarkdownGenerator
 
         // テーブル行が不足している場合は空文字を返す
         if (allCells.Count < 1) return "";
+        
+        // 空のテーブル（データがない場合）は空文字を返す
+        var hasAnyData = allCells.Any(row => row.Any(cell => !string.IsNullOrWhiteSpace(cell)));
+        if (!hasAnyData) return "";
 
         // より堅牢な列数正規化
         if (allCells.Count > 0)
@@ -454,28 +458,49 @@ internal static class MarkdownGenerator
             return SplitTextIntoCells(text);
         }
 
-        // 改良された適応的閾値設定（より多くの列を検出）
+        // 純粋な座標ベースの適応的閾値設定
         var sortedGaps = gaps.OrderBy(g => g).ToList();
-        var medianGap = sortedGaps[sortedGaps.Count / 2];
+        var avgGap = gaps.Average();
+        var maxGap = gaps.Max();
         
-        // より低い閾値でより多くのセル境界を検出
-        var q1 = sortedGaps[(int)(sortedGaps.Count * 0.25)];
-        var q3 = sortedGaps[(int)(sortedGaps.Count * 0.75)];
+        // フォントサイズに基づく基準値
+        var avgFontSize = words.Average(w => w.BoundingBox.Height);
+        var fontBasedThreshold = avgFontSize * 0.8;
+        
+        // 統計的閾値計算（四分位数ベース）
+        var q1 = sortedGaps.Count > 3 ? sortedGaps[(int)(sortedGaps.Count * 0.25)] : avgGap;
+        var q3 = sortedGaps.Count > 3 ? sortedGaps[(int)(sortedGaps.Count * 0.75)] : avgGap;
         var iqr = q3 - q1;
         
-        // より敏感な閾値設定（より多くの列を検出するため）
-        var threshold = q1 + (iqr * 0.5); // より低い閾値
+        // より敏感な閾値決定（より多くのセル境界を検出）
+        double threshold;
         
-        // 最小閾値を下げて細かい分割を許可
-        threshold = Math.Max(threshold, 5);
+        // 大きなギャップの検出（セル境界の候補）
+        var largeGaps = gaps.Where(g => g > avgGap * 1.5).ToList();
         
-        // 期待される列数（3-4列）を考慮した調整
-        var expectedColumns = 4;
-        if (gaps.Count > 0 && gaps.Count < expectedColumns)
+        if (largeGaps.Count > 0)
         {
-            // ギャップが少ない場合はより低い閾値を使用
-            threshold = Math.Max(medianGap * 1.2, 5);
+            // 明確なセル境界が存在する場合、最小の大きなギャップを基準とする
+            threshold = largeGaps.Min() * 0.7;
         }
+        else if (iqr > fontBasedThreshold * 0.5)
+        {
+            // 中程度の分散がある場合
+            threshold = q1 + (iqr * 0.3);
+        }
+        else
+        {
+            // ギャップが均等な場合は中央値を基準とする
+            var medianGap = sortedGaps[sortedGaps.Count / 2];
+            threshold = medianGap * 0.8;
+        }
+        
+        // より低い最小閾値を設定（より多くの分離を許可）
+        var minThreshold = fontBasedThreshold * 0.3;
+        var maxThreshold = avgFontSize * 2.5;
+        
+        threshold = Math.Max(threshold, minThreshold);
+        threshold = Math.Min(threshold, maxThreshold);
 
         currentCell.Add(words[0]);
         
@@ -507,65 +532,81 @@ internal static class MarkdownGenerator
             }
         }
 
-        // フォールバック: セル数が少なすぎる場合
-        if (cells.Count < 2)
+        // フォールバック: セル数が少なすぎる場合はより積極的に分割
+        if (cells.Count < 3)
         {
             return SplitTextIntoCells(text);
         }
 
         return cells;
     }
+    
 
     private static List<string> SplitTextIntoCells(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return new List<string>();
         
-        // より洗練された分割ロジック - 財務データパターンに特化
+        // 汎用的な単語分割ロジック - 位置情報なしでの分割
         var parts = new List<string>();
         
-        // 密集した複合数値の特別処理
-        var digitRatio = (double)text.Count(char.IsDigit) / text.Length;
+        // より厳密な単語境界検出
+        var words = text.Split(new[] { ' ', '\t', '\u00A0' }, StringSplitOptions.RemoveEmptyEntries);
         
-        // 汎用的な数値パターン分離（言語・ドメイン非依存）
-        var genericNumberPattern = @"(\d{1,4}[,.]?\d{0,3}%?|\+?-?\d{1,4}[,.]?\d{0,3}|\d{4}年|\w+\d+)";
-        var numberMatches = System.Text.RegularExpressions.Regex.Matches(text, genericNumberPattern);
-        
-        if (numberMatches.Count >= 3 && digitRatio > 0.3 && text.Length > 15)
+        // 各単語の特徴分析
+        var wordAnalyses = words.Select((word, index) => new
         {
-            var extractedParts = new List<string>();
-            var lastIndex = 0;
+            Word = word,
+            Index = index,
+            IsNumeric = word.Any(char.IsDigit),
+            HasSpecialChars = word.Any(c => !char.IsLetterOrDigit(c) && !char.IsWhiteSpace(c)),
+            Length = word.Length
+        }).ToList();
+        
+        // 目標列数に向けて最適な分割ポイントを決定
+        var targetColumns = 4;
+        var currentColumn = new List<string>();
+        var segmentCount = 0;
+        
+        foreach (var analysis in wordAnalyses)
+        {
+            currentColumn.Add(analysis.Word);
             
-            foreach (System.Text.RegularExpressions.Match match in numberMatches)
+            // セル境界の決定条件：より柔軟な基準
+            bool shouldSplit = false;
+            
+            if (segmentCount < targetColumns - 1)
             {
-                // マッチ前のテキスト部分を追加
-                if (match.Index > lastIndex)
+                // 数値や特殊文字で区切る
+                if (analysis.IsNumeric && currentColumn.Count > 1)
                 {
-                    var beforeText = text.Substring(lastIndex, match.Index - lastIndex).Trim();
-                    if (!string.IsNullOrWhiteSpace(beforeText))
-                    {
-                        extractedParts.Add(beforeText);
-                    }
+                    shouldSplit = true;
                 }
+                // 一定長さで区切る
+                else if (currentColumn.Count >= 3 && string.Join("", currentColumn).Length > 10)
+                {
+                    shouldSplit = true;
+                }
+                // 最後の数語は一つのセルに
+                else if (analysis.Index >= words.Length - 2)
+                {
+                    shouldSplit = false;
+                }
+            }
+            
+            if (shouldSplit || segmentCount == targetColumns - 1)
+            {
+                parts.Add(string.Join(" ", currentColumn).Trim());
+                currentColumn.Clear();
+                segmentCount++;
                 
-                // マッチした数値部分を追加
-                extractedParts.Add(match.Value);
-                lastIndex = match.Index + match.Length;
+                if (segmentCount >= targetColumns) break;
             }
-            
-            // 最後の残りテキストを追加
-            if (lastIndex < text.Length)
-            {
-                var remainingText = text.Substring(lastIndex).Trim();
-                if (!string.IsNullOrWhiteSpace(remainingText))
-                {
-                    extractedParts.Add(remainingText);
-                }
-            }
-            
-            if (extractedParts.Count >= 3)
-            {
-                return extractedParts.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
-            }
+        }
+        
+        // 残りの単語をまとめる
+        if (currentColumn.Count > 0)
+        {
+            parts.Add(string.Join(" ", currentColumn).Trim());
         }
         
         // フォールバック: より積極的な分割で多列対応
@@ -579,8 +620,8 @@ internal static class MarkdownGenerator
             
             foreach (var candidate in candidates)
             {
-                // 数値、年度、短い単語パターンは独立したセル
-                if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d+$|^\d{4}年|^\+?\-?\d+\.?\d*%?$|^[A-Z]\d+$|^.{1,5}$"))
+                // 汎用的な独立要素判定（数値、年度、記号パターン）
+                if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d+$|^\d{4}年|^\+?\-?\d+\.?\d*%?$|^[A-Z]\d+$"))
                 {
                     if (currentGroup.Count > 0)
                     {
@@ -927,6 +968,12 @@ internal static class MarkdownGenerator
             
         var lines = markdown.Split('\n');
         
+        // テーブル内の太字ヘッダーをMarkdownヘッダーに変換
+        lines = ExtractHeadersFromTables(lines);
+        
+        // より積極的な後処理：残存する太字ヘッダー行を除去
+        lines = CleanupRemainingBoldHeaders(lines);
+        
         // テーブルの分離された行を統合する前処理
         lines = MergeDisconnectedTableCells(lines);
         
@@ -1071,18 +1118,14 @@ internal static class MarkdownGenerator
                         }
                     }
                     
-                    // テキスト行を収集（より寛容な条件）
-                    if (nextLine.Length > 0 && nextLine.Length <= 50 && !nextLine.Contains("|"))
+                    // テキスト行を収集（さらに寛容な条件）
+                    if (nextLine.Length > 0 && !nextLine.Contains("|"))
                     {
                         nextLines.Add(nextLine);
                         j++;
-                    }
-                    else if (nextLine.Length > 50)
-                    {
-                        // 長いテキストも1行だけ収集
-                        nextLines.Add(nextLine);
-                        j++;
-                        break;
+                        
+                        // 長いテキストの場合は1行で終了
+                        if (nextLine.Length > 50) break;
                     }
                     else
                     {
@@ -1167,6 +1210,135 @@ internal static class MarkdownGenerator
         return "|" + string.Join("|", cells) + "|";
     }
 
+    private static string[] ExtractHeadersFromTables(string[] lines)
+    {
+        var result = new List<string>();
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            
+            // テーブル行かつ太字ヘッダー要素を含む場合
+            if (line.StartsWith("|") && line.Contains("**"))
+            {
+                var headerExtracted = ExtractAndConvertBoldHeader(line);
+                if (headerExtracted.IsHeader)
+                {
+                    // ヘッダーをMarkdown形式で追加
+                    result.Add($"## {headerExtracted.HeaderText}");
+                    result.Add("");
+                    
+                    // 残りのテーブル内容があれば追加
+                    if (!string.IsNullOrWhiteSpace(headerExtracted.RemainingContent))
+                    {
+                        result.Add(headerExtracted.RemainingContent);
+                    }
+                    continue;
+                }
+            }
+            
+            result.Add(lines[i]);
+        }
+        
+        return result.ToArray();
+    }
+    
+    private static (bool IsHeader, string HeaderText, string RemainingContent) ExtractAndConvertBoldHeader(string tableLine)
+    {
+        // テーブル行から太字ヘッダーを抽出
+        var cells = tableLine.Split('|').Select(c => c.Trim()).Where(c => !string.IsNullOrEmpty(c)).ToList();
+        
+        foreach (var cell in cells)
+        {
+            var boldMatch = System.Text.RegularExpressions.Regex.Match(cell, @"\*\*([^*]+)\*\*");
+            if (boldMatch.Success)
+            {
+                var boldText = boldMatch.Groups[1].Value.Trim();
+                
+                // 汎用的ヘッダー判定
+                if (IsLikelyStandaloneHeader(boldText, cells))
+                {
+                    return (true, boldText, "");
+                }
+            }
+        }
+        
+        return (false, "", tableLine);
+    }
+    
+    private static bool IsLikelyStandaloneHeader(string boldText, List<string> cells)
+    {
+        // 汎用的な判定条件（文字数制限なし）：
+        // 1. セル構造の分析：他のセルが空または非構造的
+        // 2. コンテンツ密度の分析：太字部分がコンテンツの主要部分
+        // 3. 表形式パターンの不在
+        
+        var nonBoldCells = cells.Where(c => !c.Contains("**") || string.IsNullOrWhiteSpace(c.Replace("**", "").Trim())).Count();
+        var totalCells = cells.Count;
+        
+        // セル密度分析：空セルが多い場合はヘッダー構造
+        var emptyRatio = (double)nonBoldCells / totalCells;
+        
+        // コンテンツ分布分析：太字コンテンツが行の主要部分を占める
+        var totalContent = string.Join("", cells).Replace("**", "");
+        var boldContentRatio = (double)boldText.Length / Math.Max(totalContent.Length, 1);
+        
+        return emptyRatio >= 0.6 && boldContentRatio >= 0.5;
+    }
+
+    private static string[] CleanupRemainingBoldHeaders(string[] lines)
+    {
+        var result = new List<string>();
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var trimmed = line.Trim();
+            
+            // テーブル行内の太字ヘッダーパターンを検出（データも含まれているかチェック）
+            if (trimmed.StartsWith("|") && trimmed.Contains("**") && trimmed.EndsWith("|"))
+            {
+                var cells = trimmed.Split('|').Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+                var hasHeadersOnly = true;
+                var headers = new List<string>();
+                var nonHeaderCells = new List<string>();
+                
+                foreach (var cell in cells)
+                {
+                    var cellContent = cell.Trim();
+                    if (cellContent.StartsWith("**") && cellContent.EndsWith("**") && cellContent.Length > 4)
+                    {
+                        var headerText = cellContent.Substring(2, cellContent.Length - 4).Trim();
+                        if (!string.IsNullOrWhiteSpace(headerText))
+                        {
+                            headers.Add(headerText);
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(cellContent))
+                    {
+                        hasHeadersOnly = false;
+                        nonHeaderCells.Add(cellContent);
+                    }
+                }
+                
+                // ヘッダーだけの行の場合のみ抽出
+                if (hasHeadersOnly && headers.Count > 0 && nonHeaderCells.Count == 0)
+                {
+                    foreach (var header in headers)
+                    {
+                        result.Add($"## {header}");
+                        result.Add("");
+                    }
+                    continue; // 元のテーブル行は除去
+                }
+            }
+            
+            result.Add(line);
+        }
+        
+        return result.ToArray();
+    }
+    
     private static string[] RemoveDuplicateTableSeparators(string[] lines)
     {
         var result = new List<string>();
@@ -1280,35 +1452,43 @@ internal static class MarkdownGenerator
     
     private static int DetermineTargetCell(string fragment, List<string> existingCells, int fragmentIndex)
     {
-        // デフォルトは説明セル（インデックス1）
+        // デフォルトは最初のセル
         if (existingCells.Count < 2) return 0;
         
-        // 数字のみの場合は年齢セル（インデックス1）の可能性
-        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^\d{1,3}$"))
+        // 汎用的なパターン分析による配置決定（言語・ドメイン非依存）
+        
+        // 数値のみのフラグメント
+        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^\d{1,4}$"))
         {
-            return 1;
+            return Math.Min(1, existingCells.Count - 1);
         }
         
-        // 職業関連の単語（営業、エンジニア、デザイナーなど）
-        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"(営業|エンジニア|デザイナー|開発|管理|販売|事務|技術)"))
+        // 短いフラグメント（1-3文字）は文字種に基づく分散
+        if (fragment.Length <= 3)
         {
-            return Math.Min(2, existingCells.Count - 1);
+            return fragmentIndex % existingCells.Count;
         }
         
-        // 名前の可能性（漢字3-4文字）
-        if (System.Text.RegularExpressions.Regex.IsMatch(fragment, @"^[一-龯]{2,4}$"))
+        // 長いフラグメント（4文字以上）の場合
+        if (fragment.Length >= 4)
         {
-            return 0;
+            // 文字の種類分析：数字が多い場合
+            var digitRatio = (double)fragment.Count(char.IsDigit) / fragment.Length;
+            if (digitRatio > 0.5)
+            {
+                return Math.Min(1, existingCells.Count - 1);
+            }
+            
+            // アルファベットが多い場合
+            var letterRatio = (double)fragment.Count(c => char.IsLetter(c) && c < 128) / fragment.Length;
+            if (letterRatio > 0.5)
+            {
+                return Math.Min(2, existingCells.Count - 1);
+            }
         }
         
-        // 地名・住所関連
-        if (fragment.Contains("都") || fragment.Contains("府") || fragment.Contains("県") || fragment.Contains("市"))
-        {
-            return Math.Min(3, existingCells.Count - 1);
-        }
-        
-        // その他は説明セル
-        return 1;
+        // フラグメントのインデックスに基づく分散配置（汎用的）
+        return fragmentIndex % existingCells.Count;
     }
     
     private static bool ShouldBeLineBreak(string fragment, List<string> allFragments, int currentIndex)
