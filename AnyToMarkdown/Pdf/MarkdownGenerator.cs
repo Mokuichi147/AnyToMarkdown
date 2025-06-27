@@ -894,18 +894,46 @@ internal static class MarkdownGenerator
         var groups = new List<WordGroup>();
         var currentGroup = new List<UglyToad.PdfPig.Content.Word>();
         
-        // 単語間のギャップで分割（改良版）
+        if (words.Count == 0) return groups;
+        
+        // 単語間のギャップで分割（統計的分析版）
         var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
         var avgFontSize = words.Average(w => w.BoundingBox.Height);
         
-        // 適応的閾値計算（フォントサイズと単語密度を考慮）
-        var wordDensity = CalculateWordDensity(sortedWords);
-        var gapThreshold = CalculateAdaptiveGapThreshold(avgFontSize, wordDensity);
-        
-        // 複数列テーブルの場合のギャップ調整
-        if (words.Count >= 3) // 複数列の可能性が高い場合
+        // ギャップを計算
+        var gaps = new List<double>();
+        for (int i = 1; i < sortedWords.Count; i++)
         {
-            gapThreshold = Math.Max(gapThreshold, avgFontSize * 1.0); // バランスの取れたギャップ検出
+            gaps.Add(sortedWords[i].BoundingBox.Left - sortedWords[i-1].BoundingBox.Right);
+        }
+        
+        // ギャップの統計的分析（パーセンタイル法）
+        double gapThreshold;
+        if (gaps.Count > 0)
+        {
+            gaps.Sort();
+            
+            // より積極的な列分離：75パーセンタイル以上を列境界として検出
+            var percentile75Index = (int)(gaps.Count * 0.75);
+            var percentile75 = gaps[Math.Min(percentile75Index, gaps.Count - 1)];
+            
+            // 最小閾値を設定（フォントサイズの0.3倍、または75パーセンタイル値の半分）
+            var minThreshold = avgFontSize * 0.3;
+            var adaptiveThreshold = Math.Max(percentile75 * 0.5, minThreshold);
+            
+            // 非常に小さなギャップしかない場合は、さらに低い閾値を適用
+            if (percentile75 < avgFontSize * 0.5)
+            {
+                gapThreshold = Math.Max(avgFontSize * 0.2, gaps.Average() * 1.2);
+            }
+            else
+            {
+                gapThreshold = adaptiveThreshold;
+            }
+        }
+        else
+        {
+            gapThreshold = avgFontSize * 0.5;
         }
         
         currentGroup.Add(sortedWords[0]);
