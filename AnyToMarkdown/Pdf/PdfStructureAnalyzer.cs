@@ -153,8 +153,13 @@ internal class PdfStructureAnalyzer
         if (cleanText.StartsWith(">")) return ElementType.QuoteBlock;
         if (cleanText.StartsWith("```")) return ElementType.CodeBlock;
         
-        // 水平線の検出（一時的にコメントアウト）
-        // if (IsMarkdownHorizontalLine(cleanText)) return ElementType.HorizontalLine;
+        // 水平線の検出（3文字以上の同じ文字）
+        if (!string.IsNullOrWhiteSpace(cleanText) && cleanText.Length >= 3)
+        {
+            var trimmed = cleanText.Trim();
+            if (trimmed.All(c => c == '-') || trimmed.All(c => c == '*') || trimmed.All(c => c == '_'))
+                return ElementType.HorizontalLine;
+        }
         
         // リスト項目の判定を最優先（ヘッダー判定より前に実行）
         if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return ElementType.ListItem;
@@ -181,6 +186,10 @@ internal class PdfStructureAnalyzer
         // 段落として扱うべきパターンの除外
         if (cleanText.EndsWith(":") && cleanText.Length > 5) return ElementType.Paragraph;
         if (cleanText.Contains("水平線") || cleanText.Contains("エスケープ")) return ElementType.Paragraph;
+        
+        // エスケープされた文字を含むテキストは段落として扱う
+        if (cleanText.Contains("\\*") || cleanText.Contains("\\_") || cleanText.Contains("\\#") || cleanText.Contains("\\["))
+            return ElementType.Paragraph;
         
         // 強力なヘッダー判定条件
         if ((isLargeFont && hasHeaderContent) || 

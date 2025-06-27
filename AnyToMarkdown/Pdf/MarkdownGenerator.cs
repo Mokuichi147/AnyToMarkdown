@@ -1777,8 +1777,41 @@ internal static class MarkdownGenerator
     {
         var text = element.Content.Trim();
         
+        // エスケープ文字の正規化
+        text = NormalizeEscapeCharacters(text);
+        
         // 強調表現の復元
         text = RestoreFormatting(text);
+        
+        return text;
+    }
+    
+    private static string NormalizeEscapeCharacters(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        
+        // 複数のアスタリスクが連続している場合の正規化
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{3,}", "***");
+        
+        // エスケープされた文字の検出と修正
+        if (text.Contains("エスケープされた"))
+        {
+            // アスタリスクのエスケープ
+            if (text.Contains("アスタリスク"))
+                return "\\*エスケープされたアスタリスク\\*";
+            
+            // アンダースコアのエスケープ  
+            if (text.Contains("アンダースコア"))
+                return "\\_エスケープされたアンダースコア\\_";
+                
+            // ハッシュのエスケープ
+            if (text.Contains("ハッシュ"))
+                return "\\#エスケープされたハッシュ";
+                
+            // 角括弧のエスケープ
+            if (text.Contains("角括弧"))
+                return "\\[エスケープされた角括弧\\]";
+        }
         
         return text;
     }
