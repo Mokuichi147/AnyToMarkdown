@@ -228,12 +228,12 @@ internal static class MarkdownGenerator
         // 重み付け統合スコア（フォントサイズ60% + 座標30% + テキスト長10%）
         var combinedScore = fontSizeScore * 0.6 + coordinateScore * 0.3 + lengthScore * 0.1;
         
-        // スコアからレベルを決定（より保守的な判定）
-        if (combinedScore >= 0.60) return 1;
-        if (combinedScore >= 0.45) return 2;
-        if (combinedScore >= 0.30) return 3;
-        if (combinedScore >= 0.20) return 4;
-        if (combinedScore >= 0.15) return 5;
+        // スコアからレベルを決定（バランス調整）
+        if (combinedScore >= 0.50) return 1;
+        if (combinedScore >= 0.35) return 2;
+        if (combinedScore >= 0.25) return 3;
+        if (combinedScore >= 0.18) return 4;
+        if (combinedScore >= 0.12) return 5;
         return 6;
     }
     
@@ -271,6 +271,17 @@ internal static class MarkdownGenerator
     private static double CalculateTextLengthScore(string content)
     {
         var length = content.Trim().Length;
+        
+        // コードブロックやリストの誤認識を防ぐ
+        if (content.Contains("public") || content.Contains("class") || content.Contains("{") || content.Contains("}"))
+        {
+            return 0.1; // コードのような内容はヘッダーではない
+        }
+        
+        if (content.StartsWith("-") || content.StartsWith("*") || content.StartsWith("•"))
+        {
+            return 0.2; // リスト項目はヘッダーではない
+        }
         
         // テキスト長による重み付け（短いほど高スコア、より寛容）
         if (length <= 15) return 1.0;
@@ -477,9 +488,10 @@ internal static class MarkdownGenerator
             foreach (var cell in cells)
             {
                 var cleanCell = cell.Replace("|", "\\|").Trim();
-                // テーブルセルでの<br>を確実に除去（強制・複数パターン対応）
-                cleanCell = cleanCell.Replace("<br>", "").Replace("<br/>", "").Replace("<BR>", "").Replace("<BR/>", "");
+                // テーブルセルでの<br>を確実に除去（強制・全パターン対応）
+                cleanCell = cleanCell.Replace("<br>", "").Replace("<br/>", "").Replace("<BR>", "").Replace("<BR/>", "").Replace("<br />", "");
                 cleanCell = System.Text.RegularExpressions.Regex.Replace(cleanCell, @"<br\s*/?>\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                cleanCell = System.Text.RegularExpressions.Regex.Replace(cleanCell, @"&lt;br\s*/?&gt;", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (string.IsNullOrWhiteSpace(cleanCell)) cleanCell = "";
                 sb.Append($" {cleanCell} |");
             }
@@ -764,10 +776,10 @@ internal static class MarkdownGenerator
         // 密度が高い場合はより小さな閾値、密度が低い場合はより大きな閾値
         var densityFactor = Math.Max(0.5, Math.Min(2.0, 1.0 / wordDensity));
         
-        // テーブルデータでは、より大きなギャップのみを列の区切りとして認識
-        var baseThreshold = avgFontSize * 1.2 * densityFactor;
+        // テーブルデータ用の適応的ギャップ閾値
+        var baseThreshold = avgFontSize * 0.9 * densityFactor;
         
-        return Math.Max(baseThreshold, avgFontSize * 2.0); // 最低でもフォントサイズの2倍
+        return Math.Max(baseThreshold, avgFontSize * 1.2); // より柔軟な列分離
     }
     
     private static int DetermineOptimalColumnCount(List<int> columnCounts)
@@ -807,10 +819,10 @@ internal static class MarkdownGenerator
         var wordDensity = CalculateWordDensity(sortedWords);
         var gapThreshold = CalculateAdaptiveGapThreshold(avgFontSize, wordDensity);
         
-        // 複数行テーブルの場合、より厳密なギャップ検出
+        // 複数列テーブルの場合のギャップ調整
         if (words.Count >= 3) // 複数列の可能性が高い場合
         {
-            gapThreshold = Math.Max(gapThreshold, avgFontSize * 1.5); // より大きなギャップのみ列分割
+            gapThreshold = Math.Max(gapThreshold, avgFontSize * 1.0); // バランスの取れたギャップ検出
         }
         
         currentGroup.Add(sortedWords[0]);

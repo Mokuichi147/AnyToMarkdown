@@ -34,6 +34,9 @@ internal class PdfStructureAnalyzer
         // ヘッダーの座標ベース検出とレベル修正
         elements = PostProcessHeaderDetectionWithCoordinates(elements, fontAnalysis);
         
+        // 後処理：コードブロックと引用ブロックの検出
+        elements = CodeAndQuoteBlockDetection.PostProcessCodeAndQuoteBlocks(elements);
+        
         // 後処理：テーブルヘッダーの統合処理
         elements = TableHeaderIntegration.PostProcessTableHeaderIntegration(elements);
         
@@ -2977,6 +2980,74 @@ internal static class TableHeaderIntegration
             Words = paragraph.Words,
             IsIndented = paragraph.IsIndented
         };
+    }
+}
+
+internal static class CodeAndQuoteBlockDetection
+{
+    public static List<DocumentElement> PostProcessCodeAndQuoteBlocks(List<DocumentElement> elements)
+    {
+        var result = new List<DocumentElement>();
+        
+        for (int i = 0; i < elements.Count; i++)
+        {
+            var current = elements[i];
+            
+            // コードブロックの検出
+            if (IsCodeBlock(current))
+            {
+                current.Type = ElementType.CodeBlock;
+            }
+            // 引用ブロックの検出
+            else if (IsQuoteBlock(current))
+            {
+                current.Type = ElementType.QuoteBlock;
+            }
+            
+            result.Add(current);
+        }
+        
+        return result;
+    }
+    
+    private static bool IsCodeBlock(DocumentElement element)
+    {
+        var content = element.Content.Trim();
+        
+        // コードの典型的なパターン
+        if (content.Contains("public") && content.Contains("class"))
+            return true;
+            
+        if (content.Contains("{") && content.Contains("}"))
+            return true;
+            
+        if (content.Contains("void") && content.Contains("(") && content.Contains(")"))
+            return true;
+            
+        // プログラミング言語のキーワード
+        var codeKeywords = new[] { "function", "var", "const", "let", "return", "if", "else", "for", "while" };
+        if (codeKeywords.Any(keyword => content.Contains(keyword)))
+            return true;
+        
+        return false;
+    }
+    
+    private static bool IsQuoteBlock(DocumentElement element)
+    {
+        var content = element.Content.Trim();
+        
+        // 引用文の典型的なパターン
+        if (content.StartsWith(">"))
+            return true;
+            
+        // 引用らしいコンテキスト（短い文で、引用符がある）
+        if (content.Contains("「") && content.Contains("」"))
+            return true;
+            
+        if (content.Contains("\"") && content.Length < 100)
+            return true;
+        
+        return false;
     }
 }
 
