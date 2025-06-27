@@ -34,6 +34,9 @@ internal class PdfStructureAnalyzer
         // ヘッダーの座標ベース検出とレベル修正
         elements = PostProcessHeaderDetectionWithCoordinates(elements, fontAnalysis);
         
+        // 後処理：テーブルヘッダーの統合処理
+        elements = TableHeaderIntegration.PostProcessTableHeaderIntegration(elements);
+        
         // 後処理：図形情報と連続する行の構造パターンを分析してテーブルを検出
         elements = PostProcessTableDetection(elements, graphicsInfo);
         
@@ -2896,6 +2899,85 @@ public class HeaderCandidate
     public double FontSize { get; set; }
     public double FontSizeRatio { get; set; }
     public bool IsCurrentlyHeader { get; set; }
+}
+
+internal static class TableHeaderIntegration
+{
+    public static List<DocumentElement> PostProcessTableHeaderIntegration(List<DocumentElement> elements)
+    {
+        var result = new List<DocumentElement>();
+        
+        for (int i = 0; i < elements.Count; i++)
+        {
+            var current = elements[i];
+            
+            // テーブル行の直前にある段落をチェック
+            if (current.Type == ElementType.TableRow && i > 0)
+            {
+                var previous = elements[i - 1];
+                
+                // 前の要素がテーブルヘッダーになり得るかチェック
+                if (previous.Type == ElementType.Paragraph && CouldBeTableHeader(previous, current))
+                {
+                    // 前の段落をテーブル行に変換
+                    if (result.Count > 0 && result.Last() == previous)
+                    {
+                        result.RemoveAt(result.Count - 1);
+                    }
+                    
+                    // ヘッダー行として追加
+                    var headerRow = ConvertToTableRow(previous);
+                    result.Add(headerRow);
+                }
+            }
+            
+            result.Add(current);
+        }
+        
+        return result;
+    }
+    
+    private static bool CouldBeTableHeader(DocumentElement paragraph, DocumentElement tableRow)
+    {
+        var paragraphText = paragraph.Content.Trim();
+        
+        // 短いテキストで、複数の列要素を含む可能性
+        if (paragraphText.Length > 50) return false;
+        
+        // スペースで区切られた短い単語（列名）の特徴
+        var words = paragraphText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 2 || words.Length > 10) return false;
+        
+        // 各単語が短い（列名の特徴）
+        if (words.Any(w => w.Length > 10)) return false;
+        
+        // 句読点が含まれていない（列名の特徴）
+        if (paragraphText.Contains("。") || paragraphText.Contains(",") || paragraphText.Contains("、")) return false;
+        
+        // テーブル行と垂直位置が近い（上下の位置関係をチェック）
+        var paragraphY = paragraph.Words?.Any() == true ? paragraph.Words.Min(w => w.BoundingBox.Bottom) : 0;
+        var tableRowY = tableRow.Words?.Any() == true ? tableRow.Words.Min(w => w.BoundingBox.Bottom) : 0;
+        var verticalGap = Math.Abs(tableRowY - paragraphY);
+        if (verticalGap > 30.0) return false;
+        
+        // 水平位置の配置が類似している
+        var horizontalAlignmentSimilar = Math.Abs(tableRow.LeftMargin - paragraph.LeftMargin) < 20.0;
+        
+        return horizontalAlignmentSimilar;
+    }
+    
+    private static DocumentElement ConvertToTableRow(DocumentElement paragraph)
+    {
+        return new DocumentElement
+        {
+            Type = ElementType.TableRow,
+            Content = paragraph.Content,
+            FontSize = paragraph.FontSize,
+            LeftMargin = paragraph.LeftMargin,
+            Words = paragraph.Words,
+            IsIndented = paragraph.IsIndented
+        };
+    }
 }
 
 public enum ElementType

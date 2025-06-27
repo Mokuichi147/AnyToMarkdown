@@ -228,12 +228,12 @@ internal static class MarkdownGenerator
         // 重み付け統合スコア（フォントサイズ60% + 座標30% + テキスト長10%）
         var combinedScore = fontSizeScore * 0.6 + coordinateScore * 0.3 + lengthScore * 0.1;
         
-        // スコアからレベルを決定（より積極的にレベル1,2を判定）
-        if (combinedScore >= 0.30) return 1;
-        if (combinedScore >= 0.20) return 2;
-        if (combinedScore >= 0.15) return 3;
-        if (combinedScore >= 0.10) return 4;
-        if (combinedScore >= 0.05) return 5;
+        // スコアからレベルを決定（より保守的な判定）
+        if (combinedScore >= 0.60) return 1;
+        if (combinedScore >= 0.45) return 2;
+        if (combinedScore >= 0.30) return 3;
+        if (combinedScore >= 0.20) return 4;
+        if (combinedScore >= 0.15) return 5;
         return 6;
     }
     
@@ -345,6 +345,18 @@ internal static class MarkdownGenerator
             {
                 break; // ヘッダー要素に遭遇したらテーブル終了
             }
+            else if (currentElement.Type == ElementType.Paragraph)
+            {
+                // 段落が連続するテーブル行の間にある場合は、小さなギャップとして許容
+                if (i + 1 < allElements.Count && allElements[i + 1].Type == ElementType.TableRow)
+                {
+                    continue; // 次の行がテーブル行なら段落をスキップして継続
+                }
+                else
+                {
+                    break; // 次がテーブル行でないならテーブル終了
+                }
+            }
             else
             {
                 break;
@@ -417,10 +429,32 @@ internal static class MarkdownGenerator
                 targetColumnCount = Math.Max(mostFrequentColumnCount, secondMostFrequentCount);
             }
             
-            // 最小列数を3に設定（元の表構造に合わせて）
-            maxColumns = Math.Max(targetColumnCount, 3);
+            // 実際のデータに基づく列数を使用（強制的な最小列数は設定しない）
+            maxColumns = targetColumnCount;
         }
 
+        // 末尾の空列を除去
+        if (allCells.Count > 0)
+        {
+            var hasContentInLastColumns = new bool[maxColumns];
+            foreach (var row in allCells)
+            {
+                for (int i = 0; i < Math.Min(row.Count, maxColumns); i++)
+                {
+                    if (!string.IsNullOrWhiteSpace(row[i]))
+                    {
+                        hasContentInLastColumns[i] = true;
+                    }
+                }
+            }
+            
+            // 右端から空列を除去
+            while (maxColumns > 2 && !hasContentInLastColumns[maxColumns - 1])
+            {
+                maxColumns--;
+            }
+        }
+        
         // 列数を統一
         foreach (var cells in allCells)
         {
@@ -443,6 +477,9 @@ internal static class MarkdownGenerator
             foreach (var cell in cells)
             {
                 var cleanCell = cell.Replace("|", "\\|").Trim();
+                // テーブルセルでの<br>を確実に除去（強制・複数パターン対応）
+                cleanCell = cleanCell.Replace("<br>", "").Replace("<br/>", "").Replace("<BR>", "").Replace("<BR/>", "");
+                cleanCell = System.Text.RegularExpressions.Regex.Replace(cleanCell, @"<br\s*/?>\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (string.IsNullOrWhiteSpace(cleanCell)) cleanCell = "";
                 sb.Append($" {cleanCell} |");
             }
@@ -454,7 +491,7 @@ internal static class MarkdownGenerator
                 sb.Append("|");
                 for (int i = 0; i < maxColumns; i++)
                 {
-                    sb.Append(" --- |");
+                    sb.Append("-----|");
                 }
                 sb.AppendLine();
             }
@@ -724,9 +761,13 @@ internal static class MarkdownGenerator
     
     private static double CalculateAdaptiveGapThreshold(double avgFontSize, double wordDensity)
     {
-        // 密度が高い場合はより小さな闾値、密度が低い場合はより大きな闾値
+        // 密度が高い場合はより小さな閾値、密度が低い場合はより大きな閾値
         var densityFactor = Math.Max(0.5, Math.Min(2.0, 1.0 / wordDensity));
-        return avgFontSize * 0.8 * densityFactor;
+        
+        // テーブルデータでは、より大きなギャップのみを列の区切りとして認識
+        var baseThreshold = avgFontSize * 1.2 * densityFactor;
+        
+        return Math.Max(baseThreshold, avgFontSize * 2.0); // 最低でもフォントサイズの2倍
     }
     
     private static int DetermineOptimalColumnCount(List<int> columnCounts)
@@ -765,6 +806,12 @@ internal static class MarkdownGenerator
         // 適応的閾値計算（フォントサイズと単語密度を考慮）
         var wordDensity = CalculateWordDensity(sortedWords);
         var gapThreshold = CalculateAdaptiveGapThreshold(avgFontSize, wordDensity);
+        
+        // 複数行テーブルの場合、より厳密なギャップ検出
+        if (words.Count >= 3) // 複数列の可能性が高い場合
+        {
+            gapThreshold = Math.Max(gapThreshold, avgFontSize * 1.5); // より大きなギャップのみ列分割
+        }
         
         currentGroup.Add(sortedWords[0]);
         
@@ -1742,16 +1789,28 @@ internal static class MarkdownGenerator
     {
         if (string.IsNullOrWhiteSpace(cellContent)) return cellContent;
         
-        // 改行文字を <br> タグに変換（Markdownテーブル内での改行表現）
-        cellContent = cellContent.Replace("\r\n", "<br>")
-                                .Replace("\n", "<br>")
-                                .Replace("\r", "<br>");
-        
-        // 連続する <br> タグを単一に統合
-        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"(<br>\s*){2,}", "<br>");
-        
-        // 既存の <br> タグを保持
-        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br>\s*<br>", "<br>");
+        // 短いテーブルセルでは <br> を除去して単純化
+        if (cellContent.Length <= 20)
+        {
+            // 既存の<br>タグもすべて除去
+            cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br\s*/?>\s*", "");
+            cellContent = cellContent.Replace("\r\n", "").Replace("\n", "").Replace("\r", "");
+            // 文字と数字の間の不自然な空白や改行を除去
+            cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"([A-Za-z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF])\s*(\d+)", "$1$2");
+        }
+        else
+        {
+            // 改行文字を <br> タグに変換（Markdownテーブル内での改行表現）
+            cellContent = cellContent.Replace("\r\n", "<br>")
+                                    .Replace("\n", "<br>")
+                                    .Replace("\r", "<br>");
+            
+            // 連続する <br> タグを単一に統合
+            cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"(<br>\s*){2,}", "<br>");
+            
+            // 既存の <br> タグを保持
+            cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br>\s*<br>", "<br>");
+        }
         
         // テーブル内で改行が必要な場合の代替表現も対応
         // 長いテキストを自動的に改行に変換する
