@@ -1908,6 +1908,9 @@ internal static class MarkdownGenerator
                 content = content.Substring(0, content.Length - 3).Trim();
             }
             
+            // コードブロック内の太字フォーマットを除去
+            content = StripMarkdownFormatting(content);
+            
             sb.AppendLine(content);
         }
         
@@ -1962,8 +1965,10 @@ internal static class MarkdownGenerator
         if (allText.Contains("#!/bin/bash") || allText.Contains("sudo ") || allText.Contains("apt-get") || allText.Contains("yum "))
             return "bash";
             
-        // C#
-        if (allText.Contains("using ") || allText.Contains("namespace ") || allText.Contains("public class"))
+        // C# (considering bold formatting)
+        if (allText.Contains("using ") || allText.Contains("namespace ") || 
+            allText.Contains("public class") || allText.Contains("**public** **class**") ||
+            allText.Contains("public void") || allText.Contains("**public** void"))
             return "csharp";
             
         // HTML
