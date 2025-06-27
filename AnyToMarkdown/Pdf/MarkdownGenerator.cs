@@ -146,6 +146,7 @@ internal static class MarkdownGenerator
             ElementType.TableRow => ConvertTableRow(element, allElements, currentIndex),
             ElementType.CodeBlock => ConvertCodeBlock(element, allElements, currentIndex),
             ElementType.QuoteBlock => ConvertQuoteBlock(element, allElements, currentIndex),
+            ElementType.HorizontalLine => ConvertHorizontalLine(element),
             ElementType.Paragraph => ConvertParagraph(element),
             _ => element.Content
         };
@@ -425,6 +426,25 @@ internal static class MarkdownGenerator
         // その他はダッシュを付ける
         text = text.Replace("\0", "");
         return $"- {text}";
+    }
+    
+    private static string ConvertHorizontalLine(DocumentElement element)
+    {
+        var text = element.Content.Trim();
+        
+        // 既に適切な水平線の場合はそのまま
+        if (text == "---" || text == "***" || text == "___")
+            return text;
+            
+        // 文字の種類に基づいて適切な水平線に変換
+        if (text.Contains("-"))
+            return "---";
+        else if (text.Contains("*"))
+            return "***";
+        else if (text.Contains("_"))
+            return "___";
+        else
+            return "---"; // デフォルト
     }
 
     private static string ConvertTableRow(DocumentElement element, List<DocumentElement> allElements, int currentIndex)

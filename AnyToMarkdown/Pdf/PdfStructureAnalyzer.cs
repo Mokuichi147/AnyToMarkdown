@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using UglyToad.PdfPig.Content;
 
@@ -152,6 +153,9 @@ internal class PdfStructureAnalyzer
         if (cleanText.StartsWith(">")) return ElementType.QuoteBlock;
         if (cleanText.StartsWith("```")) return ElementType.CodeBlock;
         
+        // 水平線の検出（一時的にコメントアウト）
+        // if (IsMarkdownHorizontalLine(cleanText)) return ElementType.HorizontalLine;
+        
         // リスト項目の判定を最優先（ヘッダー判定より前に実行）
         if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return ElementType.ListItem;
         if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return ElementType.ListItem;
@@ -173,6 +177,10 @@ internal class PdfStructureAnalyzer
         bool isLargeFont = maxFontSize > fontAnalysis.LargeFontThreshold;
         bool hasHeaderContent = IsHeaderLike(cleanText);
         bool isShortText = cleanText.Length <= 20; // 短いテキストはヘッダーの可能性が高い
+        
+        // 段落として扱うべきパターンの除外
+        if (cleanText.EndsWith(":") && cleanText.Length > 5) return ElementType.Paragraph;
+        if (cleanText.Contains("水平線") || cleanText.Contains("エスケープ")) return ElementType.Paragraph;
         
         // 強力なヘッダー判定条件
         if ((isLargeFont && hasHeaderContent) || 
@@ -3097,6 +3105,26 @@ internal static class CodeAndQuoteBlockDetection
         return false;
     }
     
+    private static bool IsMarkdownHorizontalLine(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        var trimmed = text.Trim();
+        
+        // 3文字以上の同じ文字の連続（---、***、___）
+        if (trimmed.Length >= 3)
+        {
+            if (trimmed.All(c => c == '-') || 
+                trimmed.All(c => c == '*') || 
+                trimmed.All(c => c == '_'))
+            {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
     private static bool IsQuoteBlock(DocumentElement element)
     {
         var content = element.Content.Trim();
@@ -3114,6 +3142,7 @@ internal static class CodeAndQuoteBlockDetection
         
         return false;
     }
+    
 }
 
 public enum ElementType
@@ -3124,5 +3153,6 @@ public enum ElementType
     ListItem,
     TableRow,
     CodeBlock,
-    QuoteBlock
+    QuoteBlock,
+    HorizontalLine
 }
