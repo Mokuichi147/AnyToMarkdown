@@ -383,10 +383,21 @@ internal static class MarkdownGenerator
         if (text.StartsWith("-") || text.StartsWith("*") || text.StartsWith("+"))
             return text;
             
+        // 太字記号（**‒**など）で包まれたリスト記号を処理
+        var boldListMatch = System.Text.RegularExpressions.Regex.Match(text, @"^\*\*([‒–—\-\*\+•])\*\*(.*)");
+        if (boldListMatch.Success)
+        {
+            var content = boldListMatch.Groups[2].Value.Trim();
+            content = content.Replace("\0", "");
+            return $"  - {content}"; // ネストされたリストとして2スペースインデント
+        }
+            
         // 日本語の箇条書き記号を変換
         if (text.StartsWith("・"))
             return "- " + text.Substring(1).Trim().Replace("\0", "");
         if (text.StartsWith("•") || text.StartsWith("◦"))
+            return "- " + text.Substring(1).Trim().Replace("\0", "");
+        if (text.StartsWith("‒") || text.StartsWith("–") || text.StartsWith("—"))
             return "- " + text.Substring(1).Trim().Replace("\0", "");
             
         // 数字付きリストの処理（より柔軟に）

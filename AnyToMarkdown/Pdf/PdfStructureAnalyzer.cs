@@ -157,6 +157,12 @@ internal class PdfStructureAnalyzer
         if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return ElementType.ListItem;
         if (cleanText.StartsWith("‒") || cleanText.StartsWith("–") || cleanText.StartsWith("—")) return ElementType.ListItem;
         
+        // 太字でフォーマットされたリスト記号も検出
+        if (text.StartsWith("**‒**") || text.StartsWith("**–**") || text.StartsWith("**—**")) return ElementType.ListItem;
+        if (text.StartsWith("**-**") || text.StartsWith("**+**")) return ElementType.ListItem;
+        if (text.StartsWith("**•**") || text.StartsWith("**・**")) return ElementType.ListItem;
+        if (text.StartsWith("***") && text.Length > 3 && !text.StartsWith("****")) return ElementType.ListItem; // **\*** パターン
+        
         // ヘッダー判定（フォントサイズと内容の両方を考慮）
         bool isLargeFont = maxFontSize > fontAnalysis.LargeFontThreshold;
         bool hasHeaderContent = IsHeaderLike(cleanText);
