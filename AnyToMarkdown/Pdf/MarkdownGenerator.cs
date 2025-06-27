@@ -204,32 +204,81 @@ internal static class MarkdownGenerator
             return Math.Min(parts.Length, 4);
         }
         
-        // フォント分析に基づく相対的なレベル判定
+        // 座標とフォントサイズを組み合わせた判定（改良版）
+        return DetermineHeaderLevelWithCoordinates(element, fontAnalysis);
+    }
+    
+    private static int DetermineHeaderLevelWithCoordinates(DocumentElement element, FontAnalysis fontAnalysis)
+    {
         var fontSizeRatio = element.FontSize / fontAnalysis.BaseFontSize;
         
-        // すべてのフォントサイズから相対的な位置を計算
+        // 横方向座標（左マージン）を取得
+        var leftPosition = element.Words?.Min(w => w.BoundingBox.Left) ?? element.LeftMargin;
+        
+        // フォントサイズ分析
         var allSizes = fontAnalysis.AllFontSizes.Distinct().OrderByDescending(s => s).ToList();
-        if (allSizes.Count > 0)
+        var fontSizeScore = CalculateFontSizeScore(element.FontSize, allSizes);
+        
+        // 座標位置分析（左端に近いほど上位レベル）
+        var coordinateScore = CalculateCoordinateScore(leftPosition);
+        
+        // テキスト長分析（短いほど上位レベルの可能性）
+        var lengthScore = CalculateTextLengthScore(element.Content);
+        
+        // 重み付け統合スコア（フォントサイズ60% + 座標30% + テキスト長10%）
+        var combinedScore = fontSizeScore * 0.6 + coordinateScore * 0.3 + lengthScore * 0.1;
+        
+        // スコアからレベルを決定（より積極的にレベル1,2を判定）
+        if (combinedScore >= 0.30) return 1;
+        if (combinedScore >= 0.20) return 2;
+        if (combinedScore >= 0.15) return 3;
+        if (combinedScore >= 0.10) return 4;
+        if (combinedScore >= 0.05) return 5;
+        return 6;
+    }
+    
+    private static double CalculateFontSizeScore(double fontSize, List<double> allSizes)
+    {
+        if (allSizes.Count == 0) return 0.5;
+        
+        var currentSizeRank = allSizes.IndexOf(fontSize);
+        if (currentSizeRank < 0) return 0.3;
+        
+        // 順位を正規化（0-1の範囲）
+        var normalizedRank = 1.0 - ((double)currentSizeRank / Math.Max(allSizes.Count - 1, 1));
+        return normalizedRank;
+    }
+    
+    private static double CalculateCoordinateScore(double leftPosition)
+    {
+        // 左端からの距離を正規化
+        // 一般的なPDFの左マージンは30-80ポイント程度
+        var basePosition = 30.0; // より基準位置を左に設定
+        var normalizedPosition = Math.Max(0, leftPosition - basePosition);
+        var maxExpectedIndent = 150.0; // 最大インデント150ポイントに調整
+        
+        var coordinateScore = 1.0 - Math.Min(normalizedPosition / maxExpectedIndent, 1.0);
+        
+        // 左端に近い位置により高いスコアを与える（補正）
+        if (leftPosition <= 80.0) // 80ポイント以内はボーナス
         {
-            var currentSizeRank = allSizes.IndexOf(element.FontSize);
-            if (currentSizeRank >= 0)
-            {
-                // フォントサイズの順位に基づいてレベルを決定（より一般的なレベルを優先）
-                var normalizedRank = (double)currentSizeRank / Math.Max(allSizes.Count - 1, 1);
-                
-                if (normalizedRank <= 0.2) return 1;  // 上位20%のみレベル1
-                if (normalizedRank <= 0.6) return 2;  // 上位60%はレベル2
-                if (normalizedRank <= 0.8) return 3;  // 上位80%はレベル3
-                return 4;
-            }
+            coordinateScore = Math.Min(1.0, coordinateScore * 1.2);
         }
         
-        // フォールバック：フォントサイズ比に基づく判定
-        if (fontSizeRatio >= 1.3) return 1;
-        if (fontSizeRatio >= 1.2) return 2;
-        if (fontSizeRatio >= 1.1) return 3;
+        return Math.Max(0, coordinateScore);
+    }
+    
+    private static double CalculateTextLengthScore(string content)
+    {
+        var length = content.Trim().Length;
         
-        return 4;
+        // テキスト長による重み付け（短いほど高スコア、より寛容）
+        if (length <= 15) return 1.0;
+        if (length <= 25) return 0.9;
+        if (length <= 35) return 0.8;
+        if (length <= 50) return 0.7;
+        if (length <= 80) return 0.5;
+        return 0.3;
     }
 
     private static string ConvertListItem(DocumentElement element)
@@ -621,7 +670,7 @@ internal static class MarkdownGenerator
         
         try
         {
-            // 各行の単語グループを抽出
+            // 各行の単語グループを抽出（改良版）
             var rowWordGroups = new List<List<WordGroup>>();
             
             for (int rowIndex = 0; rowIndex < tableRows.Count; rowIndex++)
@@ -629,32 +678,31 @@ internal static class MarkdownGenerator
                 var row = tableRows[rowIndex];
                 if (row.Words == null || row.Words.Count == 0) continue;
                 
-                var wordGroups = ExtractWordGroupsFromRow(row.Words, rowIndex);
+                var wordGroups = ExtractWordGroupsFromRowAdvanced(row.Words, rowIndex);
                 rowWordGroups.Add(wordGroups);
             }
             
             if (rowWordGroups.Count < 2) return analysis;
             
-            // 列数の推定（最も一般的な列数を採用）
+            // 列数を統計的に決定（より精密）
             var columnCounts = rowWordGroups.Select(groups => groups.Count).ToList();
-            var mostCommonColumnCount = columnCounts.GroupBy(c => c)
-                .OrderByDescending(g => g.Count())
-                .First().Key;
+            var mostCommonColumnCount = DetermineOptimalColumnCount(columnCounts);
             
-            // 各列の配置パターンを分析
+            // 各列の配置パターンを精密分析
             for (int colIndex = 0; colIndex < mostCommonColumnCount; colIndex++)
             {
-                var columnInfo = AnalyzeColumnAlignment(rowWordGroups, colIndex);
+                var columnInfo = AnalyzeColumnAlignmentEnhanced(rowWordGroups, colIndex);
                 if (columnInfo != null)
                 {
                     analysis.Columns.Add(columnInfo);
                 }
             }
             
-            // 全体の一貫性を計算
-            analysis.OverallConsistency = analysis.Columns.Count > 0 
-                ? analysis.Columns.Average(col => col.AlignmentConsistency)
-                : 0.0;
+            // Markdownテーブル仕様に基づく統一性検証
+            analysis.OverallConsistency = ValidateMarkdownTableConsistency(analysis.Columns);
+            
+            // 不整合な列を修正
+            analysis.Columns = RefineColumnBoundaries(analysis.Columns, rowWordGroups);
         }
         catch
         {
@@ -664,15 +712,59 @@ internal static class MarkdownGenerator
         return analysis;
     }
     
-    private static List<WordGroup> ExtractWordGroupsFromRow(List<UglyToad.PdfPig.Content.Word> words, int rowIndex)
+    private static double CalculateWordDensity(List<UglyToad.PdfPig.Content.Word> sortedWords)
+    {
+        if (sortedWords.Count < 2) return 1.0;
+        
+        var totalWidth = sortedWords.Last().BoundingBox.Right - sortedWords.First().BoundingBox.Left;
+        var totalWordWidth = sortedWords.Sum(w => w.BoundingBox.Width);
+        
+        return totalWordWidth / totalWidth;
+    }
+    
+    private static double CalculateAdaptiveGapThreshold(double avgFontSize, double wordDensity)
+    {
+        // 密度が高い場合はより小さな闾値、密度が低い場合はより大きな闾値
+        var densityFactor = Math.Max(0.5, Math.Min(2.0, 1.0 / wordDensity));
+        return avgFontSize * 0.8 * densityFactor;
+    }
+    
+    private static int DetermineOptimalColumnCount(List<int> columnCounts)
+    {
+        // 統計的に最適な列数を決定
+        var countGroups = columnCounts.GroupBy(c => c).OrderByDescending(g => g.Count());
+        var mostFrequent = countGroups.First().Key;
+        
+        // 最頻値が全体の50%以上であるかチェック
+        var mostFrequentRatio = (double)countGroups.First().Count() / columnCounts.Count;
+        
+        if (mostFrequentRatio >= 0.5)
+        {
+            return mostFrequent;
+        }
+        
+        // 最頻値と次点の中で大きい方を選択（データ損失を避ける）
+        if (countGroups.Count() > 1)
+        {
+            var secondMostFrequent = countGroups.Skip(1).First().Key;
+            return Math.Max(mostFrequent, secondMostFrequent);
+        }
+        
+        return mostFrequent;
+    }
+    
+    private static List<WordGroup> ExtractWordGroupsFromRowAdvanced(List<UglyToad.PdfPig.Content.Word> words, int rowIndex)
     {
         var groups = new List<WordGroup>();
         var currentGroup = new List<UglyToad.PdfPig.Content.Word>();
         
-        // 単語間のギャップで分割
+        // 単語間のギャップで分割（改良版）
         var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
         var avgFontSize = words.Average(w => w.BoundingBox.Height);
-        var gapThreshold = avgFontSize * 1.2; // より保守的な閾値
+        
+        // 適応的閾値計算（フォントサイズと単語密度を考慮）
+        var wordDensity = CalculateWordDensity(sortedWords);
+        var gapThreshold = CalculateAdaptiveGapThreshold(avgFontSize, wordDensity);
         
         currentGroup.Add(sortedWords[0]);
         
@@ -717,7 +809,7 @@ internal static class MarkdownGenerator
         };
     }
     
-    private static ColumnInfo? AnalyzeColumnAlignment(List<List<WordGroup>> rowWordGroups, int columnIndex)
+    private static ColumnInfo? AnalyzeColumnAlignmentEnhanced(List<List<WordGroup>> rowWordGroups, int columnIndex)
     {
         // 指定された列インデックスの単語グループを収集
         var columnGroups = new List<WordGroup>();
@@ -732,23 +824,244 @@ internal static class MarkdownGenerator
         
         if (columnGroups.Count < 2) return null;
         
-        // 列の境界を決定
-        var leftBoundary = columnGroups.Min(g => g.LeftPosition);
-        var rightBoundary = columnGroups.Max(g => g.RightPosition);
+        // より精密な境界決定（外れ値を除外）
+        var leftPositions = columnGroups.Select(g => g.LeftPosition).OrderBy(p => p).ToList();
+        var rightPositions = columnGroups.Select(g => g.RightPosition).OrderBy(p => p).ToList();
+        
+        // 四分位数を使用して外れ値を除外した境界計算
+        var leftBoundary = CalculateRobustBoundary(leftPositions, true);
+        var rightBoundary = CalculateRobustBoundary(rightPositions, false);
         var columnWidth = rightBoundary - leftBoundary;
         
-        // 配置パターンを分析
-        var alignmentType = DetermineAlignmentType(columnGroups, leftBoundary, rightBoundary);
-        var consistency = CalculateAlignmentConsistency(columnGroups, alignmentType, leftBoundary, rightBoundary);
+        // 配置パターンを精密分析（複数の判定基準を統合）
+        var alignmentType = DetermineAlignmentTypeEnhanced(columnGroups, leftBoundary, rightBoundary);
+        var consistency = CalculateAlignmentConsistencyEnhanced(columnGroups, alignmentType, leftBoundary, rightBoundary);
+        
+        // Markdownテーブル仕様への適合性をチェック
+        var markdownCompliance = ValidateMarkdownColumnCompliance(columnGroups, alignmentType);
         
         return new ColumnInfo
         {
             LeftBoundary = leftBoundary,
             RightBoundary = rightBoundary,
             AlignmentType = alignmentType,
-            AlignmentConsistency = consistency,
+            AlignmentConsistency = consistency * markdownCompliance, // コンプライアンスで重み付け
             WordGroups = columnGroups
         };
+    }
+    
+    private static double CalculateRobustBoundary(List<double> positions, bool isLeft)
+    {
+        if (positions.Count < 3) return isLeft ? positions.Min() : positions.Max();
+        
+        // 四分位数による外れ値除外
+        var q1Index = (int)(positions.Count * 0.25);
+        var q3Index = (int)(positions.Count * 0.75);
+        var q1 = positions[q1Index];
+        var q3 = positions[q3Index];
+        var iqr = q3 - q1;
+        
+        // 外れ値を除外した範囲
+        var lowerBound = q1 - 1.5 * iqr;
+        var upperBound = q3 + 1.5 * iqr;
+        
+        var filteredPositions = positions.Where(p => p >= lowerBound && p <= upperBound).ToList();
+        
+        if (filteredPositions.Count == 0) return isLeft ? positions.Min() : positions.Max();
+        
+        return isLeft ? filteredPositions.Min() : filteredPositions.Max();
+    }
+    
+    private static ColumnAlignment DetermineAlignmentTypeEnhanced(List<WordGroup> groups, double leftBoundary, double rightBoundary)
+    {
+        var columnWidth = rightBoundary - leftBoundary;
+        if (columnWidth <= 0) return ColumnAlignment.Mixed;
+        
+        // より精密な許容範囲計算（コンテンツの幅も考慮）
+        var avgContentWidth = groups.Average(g => g.RightPosition - g.LeftPosition);
+        var baseTolerance = Math.Min(columnWidth * 0.15, avgContentWidth * 0.3);
+        
+        // 各配置タイプの信頼度を計算
+        var leftScore = CalculateAlignmentScore(groups, leftBoundary, rightBoundary, ColumnAlignment.Left, baseTolerance);
+        var rightScore = CalculateAlignmentScore(groups, leftBoundary, rightBoundary, ColumnAlignment.Right, baseTolerance);
+        var centerScore = CalculateAlignmentScore(groups, leftBoundary, rightBoundary, ColumnAlignment.Center, baseTolerance);
+        
+        // 最も高いスコアの配置タイプを選択
+        var maxScore = Math.Max(leftScore, Math.Max(rightScore, centerScore));
+        var threshold = 0.6; // 60%以上の一致率が必要
+        
+        if (maxScore < threshold) return ColumnAlignment.Mixed;
+        
+        if (leftScore == maxScore) return ColumnAlignment.Left;
+        if (rightScore == maxScore) return ColumnAlignment.Right;
+        if (centerScore == maxScore) return ColumnAlignment.Center;
+        
+        return ColumnAlignment.Mixed;
+    }
+    
+    private static double CalculateAlignmentScore(List<WordGroup> groups, double leftBoundary, double rightBoundary, 
+        ColumnAlignment alignmentType, double tolerance)
+    {
+        var matchCount = 0;
+        var centerPosition = (leftBoundary + rightBoundary) / 2;
+        
+        foreach (var group in groups)
+        {
+            var isAligned = alignmentType switch
+            {
+                ColumnAlignment.Left => Math.Abs(group.LeftPosition - leftBoundary) <= tolerance,
+                ColumnAlignment.Right => Math.Abs(group.RightPosition - rightBoundary) <= tolerance,
+                ColumnAlignment.Center => Math.Abs(group.CenterPosition - centerPosition) <= tolerance,
+                _ => false
+            };
+            
+            if (isAligned) matchCount++;
+        }
+        
+        return (double)matchCount / groups.Count;
+    }
+    
+    private static double CalculateAlignmentConsistencyEnhanced(List<WordGroup> groups, ColumnAlignment alignmentType, 
+        double leftBoundary, double rightBoundary)
+    {
+        if (groups.Count == 0) return 0.0;
+        
+        var columnWidth = rightBoundary - leftBoundary;
+        var tolerance = columnWidth * 0.25; // より寛容な範囲
+        var centerPosition = (leftBoundary + rightBoundary) / 2;
+        
+        // 配置の分散を計算
+        var positions = alignmentType switch
+        {
+            ColumnAlignment.Left => groups.Select(g => g.LeftPosition - leftBoundary),
+            ColumnAlignment.Right => groups.Select(g => g.RightPosition - rightBoundary),
+            ColumnAlignment.Center => groups.Select(g => g.CenterPosition - centerPosition),
+            _ => groups.Select(g => 0.0)
+        };
+        
+        var deviations = positions.Select(Math.Abs).ToList();
+        var avgDeviation = deviations.Average();
+        var maxAcceptableDeviation = tolerance;
+        
+        // 偏差が小さいほど高いスコア
+        return Math.Max(0, 1.0 - (avgDeviation / maxAcceptableDeviation));
+    }
+    
+    private static double ValidateMarkdownColumnCompliance(List<WordGroup> groups, ColumnAlignment alignmentType)
+    {
+        // Markdownテーブルの列配置仕様への適合性をチェック
+        if (alignmentType == ColumnAlignment.Mixed) return 0.5; // 混在は部分的にのみ有効
+        
+        // 統一された配置パターンの一貫性をチェック
+        var consistencyFactors = new List<double>();
+        
+        // 1. 配置の時系列的一貫性（行順序での配置の安定性）
+        if (groups.Count >= 3)
+        {
+            var timeSeriesConsistency = CalculateTimeSeriesConsistency(groups, alignmentType);
+            consistencyFactors.Add(timeSeriesConsistency);
+        }
+        
+        // 2. コンテンツタイプと配置の適合性
+        var contentAlignmentFit = CalculateContentAlignmentFit(groups, alignmentType);
+        consistencyFactors.Add(contentAlignmentFit);
+        
+        // 3. 相対的位置の安定性
+        var positionalStability = CalculatePositionalStability(groups);
+        consistencyFactors.Add(positionalStability);
+        
+        return consistencyFactors.Count > 0 ? consistencyFactors.Average() : 1.0;
+    }
+    
+    private static double CalculateTimeSeriesConsistency(List<WordGroup> groups, ColumnAlignment alignmentType)
+    {
+        // 行順序での配置の変動を測定
+        var orderedGroups = groups.OrderBy(g => g.RowIndex).ToList();
+        var consistentCount = 0;
+        
+        for (int i = 1; i < orderedGroups.Count; i++)
+        {
+            var prev = orderedGroups[i - 1];
+            var current = orderedGroups[i];
+            
+            // 前の行と現在の行での配置の一貫性をチェック
+            var isConsistent = alignmentType switch
+            {
+                ColumnAlignment.Left => Math.Abs(current.LeftPosition - prev.LeftPosition) < 10,
+                ColumnAlignment.Right => Math.Abs(current.RightPosition - prev.RightPosition) < 10,
+                ColumnAlignment.Center => Math.Abs(current.CenterPosition - prev.CenterPosition) < 10,
+                _ => false
+            };
+            
+            if (isConsistent) consistentCount++;
+        }
+        
+        return orderedGroups.Count > 1 ? (double)consistentCount / (orderedGroups.Count - 1) : 1.0;
+    }
+    
+    private static double CalculateContentAlignmentFit(List<WordGroup> groups, ColumnAlignment alignmentType)
+    {
+        // コンテンツタイプと配置タイプの適合性を評価
+        var numericCount = 0;
+        var textCount = 0;
+        
+        foreach (var group in groups)
+        {
+            var combinedText = string.Join("", group.Words.Select(w => w.Text));
+            if (combinedText.Any(char.IsDigit) && combinedText.All(c => char.IsDigit(c) || char.IsPunctuation(c) || char.IsWhiteSpace(c)))
+            {
+                numericCount++;
+            }
+            else
+            {
+                textCount++;
+            }
+        }
+        
+        // 数値データは右寄せが一般的、テキストは左寄せが一般的
+        if (numericCount > textCount && alignmentType == ColumnAlignment.Right) return 1.0;
+        if (textCount > numericCount && alignmentType == ColumnAlignment.Left) return 1.0;
+        if (alignmentType == ColumnAlignment.Center) return 0.8; // 中央寄せは汎用的
+        
+        return 0.7; // 標準的な適合性
+    }
+    
+    private static double CalculatePositionalStability(List<WordGroup> groups)
+    {
+        if (groups.Count < 2) return 1.0;
+        
+        // 相対位置の分散を計算
+        var leftPositions = groups.Select(g => g.LeftPosition).ToList();
+        var rightPositions = groups.Select(g => g.RightPosition).ToList();
+        
+        var leftVariance = CalculateVariance(leftPositions);
+        var rightVariance = CalculateVariance(rightPositions);
+        
+        var avgPosition = (leftPositions.Average() + rightPositions.Average()) / 2;
+        var normalizedVariance = Math.Sqrt(leftVariance + rightVariance) / Math.Max(avgPosition, 1.0);
+        
+        // 分散が小さいほど安定性が高い
+        return Math.Max(0, 1.0 - normalizedVariance);
+    }
+    
+    private static double CalculateVariance(List<double> values)
+    {
+        if (values.Count < 2) return 0.0;
+        
+        var mean = values.Average();
+        var variance = values.Select(v => Math.Pow(v - mean, 2)).Average();
+        return variance;
+    }
+    
+    // 後方互換性のために旧メソッドを保持
+    private static List<WordGroup> ExtractWordGroupsFromRow(List<UglyToad.PdfPig.Content.Word> words, int rowIndex)
+    {
+        return ExtractWordGroupsFromRowAdvanced(words, rowIndex);
+    }
+    
+    private static ColumnInfo? AnalyzeColumnAlignment(List<List<WordGroup>> rowWordGroups, int columnIndex)
+    {
+        return AnalyzeColumnAlignmentEnhanced(rowWordGroups, columnIndex);
     }
     
     private static ColumnAlignment DetermineAlignmentType(List<WordGroup> groups, double leftBoundary, double rightBoundary)
@@ -799,6 +1112,121 @@ internal static class MarkdownGenerator
         }
         
         return (double)consistentCount / groups.Count;
+    }
+    
+    private static double ValidateMarkdownTableConsistency(List<ColumnInfo> columns)
+    {
+        if (columns.Count == 0) return 0.0;
+        
+        // Markdownテーブルの列配置仕様を検証
+        // 1. 各列が明確な配置タイプを持つ
+        var clearAlignmentCount = columns.Count(col => col.AlignmentType != ColumnAlignment.Mixed);
+        var alignmentClarityScore = (double)clearAlignmentCount / columns.Count;
+        
+        // 2. 列間の境界が明確に分離されている
+        var boundaryScore = ValidateColumnBoundaries(columns);
+        
+        // 3. 各列内での配置一貫性
+        var consistencyScore = columns.Average(col => col.AlignmentConsistency);
+        
+        // 4. 全体のバランス
+        var balanceScore = ValidateTableBalance(columns);
+        
+        // 統合スコア（各要素を重み付け）
+        return (alignmentClarityScore * 0.3 + boundaryScore * 0.3 + consistencyScore * 0.3 + balanceScore * 0.1);
+    }
+    
+    private static double ValidateColumnBoundaries(List<ColumnInfo> columns)
+    {
+        if (columns.Count < 2) return 1.0;
+        
+        // 列間の重なりやギャップをチェック
+        double totalScore = 0.0;
+        
+        for (int i = 0; i < columns.Count - 1; i++)
+        {
+            var currentCol = columns[i];
+            var nextCol = columns[i + 1];
+            
+            // 重なりをチェック
+            var overlap = Math.Max(0, currentCol.RightBoundary - nextCol.LeftBoundary);
+            var gap = Math.Max(0, nextCol.LeftBoundary - currentCol.RightBoundary);
+            var columnSpan = nextCol.LeftBoundary - currentCol.LeftBoundary;
+            
+            if (columnSpan > 0)
+            {
+                var separationScore = 1.0 - (overlap / columnSpan);
+                totalScore += Math.Max(0, separationScore);
+            }
+        }
+        
+        return totalScore / (columns.Count - 1);
+    }
+    
+    private static double ValidateTableBalance(List<ColumnInfo> columns)
+    {
+        if (columns.Count < 2) return 1.0;
+        
+        // 列幅のバランスをチェック
+        var columnWidths = columns.Select(col => col.RightBoundary - col.LeftBoundary).ToList();
+        var avgWidth = columnWidths.Average();
+        var variance = columnWidths.Select(w => Math.Pow(w - avgWidth, 2)).Average();
+        var standardDeviation = Math.Sqrt(variance);
+        
+        // 標準偏差が小さいほどバランスがとれている
+        var coefficientOfVariation = avgWidth > 0 ? standardDeviation / avgWidth : 1.0;
+        return Math.Max(0, 1.0 - coefficientOfVariation);
+    }
+    
+    private static List<ColumnInfo> RefineColumnBoundaries(List<ColumnInfo> columns, List<List<WordGroup>> rowWordGroups)
+    {
+        if (columns.Count < 2) return columns;
+        
+        var refinedColumns = new List<ColumnInfo>(columns);
+        
+        // 重なりや不整合を修正
+        for (int i = 0; i < refinedColumns.Count - 1; i++)
+        {
+            var currentCol = refinedColumns[i];
+            var nextCol = refinedColumns[i + 1];
+            
+            // 重なりがある場合
+            if (currentCol.RightBoundary > nextCol.LeftBoundary)
+            {
+                var midPoint = (currentCol.RightBoundary + nextCol.LeftBoundary) / 2;
+                
+                // 実際の単語位置で最適な分割点を探す
+                var optimalBoundary = FindOptimalBoundary(rowWordGroups, i, midPoint);
+                
+                currentCol.RightBoundary = optimalBoundary;
+                nextCol.LeftBoundary = optimalBoundary;
+            }
+        }
+        
+        return refinedColumns;
+    }
+    
+    private static double FindOptimalBoundary(List<List<WordGroup>> rowWordGroups, int columnIndex, double suggestedBoundary)
+    {
+        var allRelevantPositions = new List<double>();
+        
+        // 関連する列の単語位置を収集
+        foreach (var rowGroups in rowWordGroups)
+        {
+            if (columnIndex < rowGroups.Count)
+            {
+                allRelevantPositions.Add(rowGroups[columnIndex].RightPosition);
+            }
+            if (columnIndex + 1 < rowGroups.Count)
+            {
+                allRelevantPositions.Add(rowGroups[columnIndex + 1].LeftPosition);
+            }
+        }
+        
+        if (allRelevantPositions.Count == 0) return suggestedBoundary;
+        
+        // 推奨境界に最も近い位置を特定
+        return allRelevantPositions.OrderBy(pos => Math.Abs(pos - suggestedBoundary)).First();
     }
     
     private static double CalculateColumnBoundary(ColumnInfo currentCol, ColumnInfo nextCol)

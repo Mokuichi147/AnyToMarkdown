@@ -31,6 +31,9 @@ internal class PdfStructureAnalyzer
         // 後処理：コンテキスト情報を活用した要素分類の改善（テーブル検出前）
         elements = PostProcessElementClassification(elements, fontAnalysis);
         
+        // ヘッダーの座標ベース検出とレベル修正
+        elements = PostProcessHeaderDetectionWithCoordinates(elements, fontAnalysis);
+        
         // 後処理：図形情報と連続する行の構造パターンを分析してテーブルを検出
         elements = PostProcessTableDetection(elements, graphicsInfo);
         
@@ -2158,6 +2161,209 @@ internal class PdfStructureAnalyzer
         return result;
     }
     
+    private static List<DocumentElement> PostProcessHeaderDetectionWithCoordinates(List<DocumentElement> elements, FontAnalysis fontAnalysis)
+    {
+        var result = new List<DocumentElement>(elements);
+        
+        // ヘッダー候補の横方向座標分析
+        var headerCoordinateAnalysis = AnalyzeHeaderCoordinatePatterns(result, fontAnalysis);
+        
+        // 座標一貫性に基づくヘッダー検出の改良
+        for (int i = 0; i < result.Count; i++)
+        {
+            var element = result[i];
+            
+            // 既存のヘッダーレベルを座標とフォントサイズで再評価
+            if (element.Type == ElementType.Header)
+            {
+                element.Type = ElementType.Header; // レベル判定は後でMarkdownGenerator側で実施
+            }
+            // 非ヘッダー要素でも座標パターンに一致する場合はヘッダーに変更
+            else if (element.Type == ElementType.Paragraph)
+            {
+                if (ShouldBeHeaderBasedOnCoordinates(element, headerCoordinateAnalysis, fontAnalysis))
+                {
+                    element.Type = ElementType.Header;
+                }
+            }
+        }
+        
+        return result;
+    }
+    
+    private static HeaderCoordinateAnalysis AnalyzeHeaderCoordinatePatterns(List<DocumentElement> elements, FontAnalysis fontAnalysis)
+    {
+        var analysis = new HeaderCoordinateAnalysis();
+        var potentialHeaders = new List<HeaderCandidate>();
+        
+        // ヘッダー候補を収集（既存のヘッダー + フォントサイズが大きい要素）
+        foreach (var element in elements)
+        {
+            if (element.Words == null || element.Words.Count == 0) continue;
+            
+            var leftPosition = element.Words.Min(w => w.BoundingBox.Left);
+            var maxFontSize = element.Words.Max(w => w.BoundingBox.Height);
+            var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;
+            
+            // ヘッダー候補の条件
+            if (element.Type == ElementType.Header || 
+                fontSizeRatio > 1.05 || 
+                (element.Content.Length <= 20 && fontSizeRatio > 1.0))
+            {
+                potentialHeaders.Add(new HeaderCandidate
+                {
+                    Element = element,
+                    LeftPosition = leftPosition,
+                    FontSize = maxFontSize,
+                    FontSizeRatio = fontSizeRatio,
+                    IsCurrentlyHeader = element.Type == ElementType.Header
+                });
+            }
+        }
+        
+        if (potentialHeaders.Count < 2) return analysis;
+        
+        // 横方向座標の階層パターンを分析
+        var leftPositions = potentialHeaders.Select(h => h.LeftPosition).Distinct().OrderBy(p => p).ToList();
+        var coordinateGroups = GroupSimilarCoordinates(leftPositions, 10.0); // 10ポイントの許容範囲
+        
+        // フォントサイズ別の階層を分析
+        var fontSizeGroups = GroupByFontSize(potentialHeaders, fontAnalysis);
+        
+        // 座標とフォントサイズの組み合わせでヘッダーレベルを決定
+        foreach (var group in coordinateGroups)
+        {
+            var avgCoordinate = group.Average();
+            var headersAtCoordinate = potentialHeaders.Where(h => Math.Abs(h.LeftPosition - avgCoordinate) <= 10.0).ToList();
+            
+            if (headersAtCoordinate.Count >= 2) // 同じ座標に複数のヘッダーがある
+            {
+                var level = DetermineHeaderLevelFromCoordinate(avgCoordinate, coordinateGroups, fontSizeGroups);
+                
+                analysis.CoordinateLevels[avgCoordinate] = new HeaderLevelInfo
+                {
+                    Level = level,
+                    Coordinate = avgCoordinate,
+                    Count = headersAtCoordinate.Count,
+                    AvgFontSize = headersAtCoordinate.Average(h => h.FontSize),
+                    Consistency = CalculateCoordinateConsistency(headersAtCoordinate)
+                };
+            }
+        }
+        
+        return analysis;
+    }
+    
+    private static List<List<double>> GroupSimilarCoordinates(List<double> coordinates, double tolerance)
+    {
+        var groups = new List<List<double>>();
+        
+        foreach (var coord in coordinates)
+        {
+            var foundGroup = false;
+            
+            foreach (var group in groups)
+            {
+                if (group.Any(c => Math.Abs(c - coord) <= tolerance))
+                {
+                    group.Add(coord);
+                    foundGroup = true;
+                    break;
+                }
+            }
+            
+            if (!foundGroup)
+            {
+                groups.Add(new List<double> { coord });
+            }
+        }
+        
+        return groups;
+    }
+    
+    private static Dictionary<double, List<HeaderCandidate>> GroupByFontSize(List<HeaderCandidate> candidates, FontAnalysis fontAnalysis)
+    {
+        return candidates.GroupBy(c => Math.Round(c.FontSize, 1))
+                        .ToDictionary(g => g.Key, g => g.ToList());
+    }
+    
+    private static int DetermineHeaderLevelFromCoordinate(double coordinate, List<List<double>> coordinateGroups, Dictionary<double, List<HeaderCandidate>> fontSizeGroups)
+    {
+        // 左端に近いほど上位レベル
+        var sortedCoordinates = coordinateGroups.Select(g => g.Average()).OrderBy(c => c).ToList();
+        var coordinateIndex = sortedCoordinates.FindIndex(c => Math.Abs(c - coordinate) <= 10.0);
+        
+        // フォントサイズも考慮
+        var maxFontSize = fontSizeGroups.Values.SelectMany(list => list).Max(h => h.FontSize);
+        var avgFontSizeAtCoordinate = fontSizeGroups.Values
+            .SelectMany(list => list)
+            .Where(h => Math.Abs(h.LeftPosition - coordinate) <= 10.0)
+            .Average(h => h.FontSize);
+        
+        var fontSizeFactor = avgFontSizeAtCoordinate / maxFontSize;
+        
+        // 座標位置（30%）+ フォントサイズ（70%）でレベル決定
+        var coordinateFactor = coordinateIndex / (double)Math.Max(1, sortedCoordinates.Count - 1);
+        var combinedScore = coordinateFactor * 0.3 + (1.0 - fontSizeFactor) * 0.7;
+        
+        // スコアからレベルを決定（1-6）
+        if (combinedScore <= 0.15) return 1;
+        if (combinedScore <= 0.35) return 2;
+        if (combinedScore <= 0.55) return 3;
+        if (combinedScore <= 0.75) return 4;
+        if (combinedScore <= 0.90) return 5;
+        return 6;
+    }
+    
+    private static double CalculateCoordinateConsistency(List<HeaderCandidate> headers)
+    {
+        if (headers.Count < 2) return 1.0;
+        
+        var leftPositions = headers.Select(h => h.LeftPosition).ToList();
+        var variance = CalculateVariance(leftPositions);
+        var avgPosition = leftPositions.Average();
+        
+        // 分散が小さいほど一貫性が高い
+        var normalizedVariance = Math.Sqrt(variance) / Math.Max(avgPosition, 1.0);
+        return Math.Max(0, 1.0 - normalizedVariance);
+    }
+    
+    private static double CalculateVariance(List<double> values)
+    {
+        if (values.Count < 2) return 0.0;
+        
+        var mean = values.Average();
+        return values.Select(v => Math.Pow(v - mean, 2)).Average();
+    }
+    
+    private static bool ShouldBeHeaderBasedOnCoordinates(DocumentElement element, HeaderCoordinateAnalysis analysis, FontAnalysis fontAnalysis)
+    {
+        if (element.Words == null || element.Words.Count == 0) return false;
+        
+        var leftPosition = element.Words.Min(w => w.BoundingBox.Left);
+        var maxFontSize = element.Words.Max(w => w.BoundingBox.Height);
+        var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;
+        
+        // 座標パターンに一致するかチェック
+        foreach (var levelInfo in analysis.CoordinateLevels.Values)
+        {
+            if (Math.Abs(leftPosition - levelInfo.Coordinate) <= 12.0) // 12ポイント許容範囲
+            {
+                // 座標一致 + 一定以上のフォントサイズ + 短いテキスト
+                if (fontSizeRatio >= 1.0 && 
+                    element.Content.Length <= 30 && 
+                    levelInfo.Consistency > 0.7 &&
+                    !element.Content.EndsWith("。") && 
+                    !element.Content.EndsWith("."))
+                {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+    
     private static bool ShouldMergeParagraphs(DocumentElement previous, DocumentElement current)
     {
         var prevText = previous.Content.Trim();
@@ -2666,6 +2872,30 @@ public class TableRegion
     {
         return Elements.Contains(element);
     }
+}
+
+// ヘッダー座標分析用のクラス
+public class HeaderCoordinateAnalysis
+{
+    public Dictionary<double, HeaderLevelInfo> CoordinateLevels { get; set; } = new Dictionary<double, HeaderLevelInfo>();
+}
+
+public class HeaderLevelInfo
+{
+    public int Level { get; set; }
+    public double Coordinate { get; set; }
+    public int Count { get; set; }
+    public double AvgFontSize { get; set; }
+    public double Consistency { get; set; }
+}
+
+public class HeaderCandidate
+{
+    public DocumentElement Element { get; set; } = null!;
+    public double LeftPosition { get; set; }
+    public double FontSize { get; set; }
+    public double FontSizeRatio { get; set; }
+    public bool IsCurrentlyHeader { get; set; }
 }
 
 public enum ElementType
