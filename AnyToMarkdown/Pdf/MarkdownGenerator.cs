@@ -122,6 +122,12 @@ internal static class MarkdownGenerator
         var currentText = current.Content.Trim();
         var nextText = next.Content.Trim();
         
+        // 文字数による分離：長い段落は統合しない
+        if (currentText.Length > 100 || nextText.Length > 100)
+        {
+            return false;
+        }
+        
         // Markdownの特殊記法を含む場合は統合しない
         if (ContainsMarkdownSyntax(currentText) || ContainsMarkdownSyntax(nextText))
         {
@@ -129,20 +135,28 @@ internal static class MarkdownGenerator
         }
         
         // 現在の段落が完結している（句点で終わる）場合は統合しない
-        if (currentText.EndsWith("。") || currentText.EndsWith("."))
+        if (currentText.EndsWith("。") || currentText.EndsWith(".") || currentText.EndsWith("!") || currentText.EndsWith("?"))
         {
             return false;
+        }
+        
+        // 座標ベースの統合判定：行の垂直距離が大きい場合は別々の段落として扱う
+        if (current.Words.Count > 0 && next.Words.Count > 0)
+        {
+            var currentBottom = current.Words.Min(w => w.BoundingBox.Bottom);
+            var nextTop = next.Words.Max(w => w.BoundingBox.Top);
+            var verticalGap = Math.Abs(currentBottom - nextTop);
+            
+            // 垂直ギャップが大きい場合は統合しない
+            if (verticalGap > 15.0)
+            {
+                return false;
+            }
         }
         
         // URL や特殊な書式を含む場合は統合しない
-        if (currentText.StartsWith("http") || nextText.StartsWith("http") ||
-            currentText.Contains("://") || nextText.Contains("://"))
-        {
-            return false;
-        }
-        
-        // 次の段落が書式設定を含む場合は統合しない
-        if (nextText.Contains("**") || nextText.Contains("*") || nextText.Contains("_"))
+        if (currentText.Contains("://") || nextText.Contains("://") ||
+            currentText.Contains("www.") || nextText.Contains("www."))
         {
             return false;
         }
@@ -261,17 +275,20 @@ internal static class MarkdownGenerator
         var lengthScore = CalculateTextLengthScore(element.Content);
         
         // フォントサイズを主軸にした重み付け統合スコア
-        var combinedScore = fontSizeScore * 0.85 + coordinateScore * 0.10 + lengthScore * 0.05;
+        var combinedScore = fontSizeScore * 0.7 + coordinateScore * 0.2 + lengthScore * 0.1;
         
         // フォントサイズの絶対値も考慮したより精密な閾値
         var baseFontRatio = element.FontSize / fontAnalysis.BaseFontSize;
         
-        // より精密なレベル決定
-        if (baseFontRatio >= 1.8 || combinedScore >= 0.85) return 1;  // 大見出し
-        if (baseFontRatio >= 1.5 || combinedScore >= 0.70) return 2;  // 中見出し
-        if (baseFontRatio >= 1.3 || combinedScore >= 0.55) return 3;  // 小見出し
-        if (baseFontRatio >= 1.1 || combinedScore >= 0.40) return 4;  // 細見出し
-        if (baseFontRatio >= 1.0 || combinedScore >= 0.25) return 5;  // 最小見出し
+        // 座標ベースの階層検出を強化
+        var hierarchyLevel = CalculateHierarchyLevel(leftPosition);
+        
+        // より精密なレベル決定（座標ベースの階層を優先）
+        if (hierarchyLevel == 1 && (baseFontRatio >= 1.5 || combinedScore >= 0.75)) return 1;  // トップレベル
+        if (hierarchyLevel <= 2 && (baseFontRatio >= 1.3 || combinedScore >= 0.65)) return 2;  // セカンドレベル
+        if (hierarchyLevel <= 3 && (baseFontRatio >= 1.2 || combinedScore >= 0.55)) return 3;  // サードレベル
+        if (hierarchyLevel <= 4 && (baseFontRatio >= 1.1 || combinedScore >= 0.45)) return 4;  // フォースレベル
+        if (baseFontRatio >= 1.05 || combinedScore >= 0.35) return 5;  // フィフスレベル
         return 6;
     }
     
@@ -320,6 +337,16 @@ internal static class MarkdownGenerator
         }
         
         return Math.Max(0, coordinateScore);
+    }
+    
+    private static int CalculateHierarchyLevel(double leftPosition)
+    {
+        // 座標を基準にした階層レベルの決定
+        if (leftPosition <= 40.0) return 1;      // レベル1: 最左端
+        if (leftPosition <= 70.0) return 2;      // レベル2: 軽いインデント
+        if (leftPosition <= 100.0) return 3;     // レベル3: 中程度のインデント
+        if (leftPosition <= 130.0) return 4;     // レベル4: 深いインデント
+        return 5;                                // レベル5以上: 最も深い
     }
     
     private static bool IsExplicitHeader(string content)

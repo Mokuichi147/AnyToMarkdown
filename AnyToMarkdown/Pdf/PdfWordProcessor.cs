@@ -26,8 +26,22 @@ internal static class PdfWordProcessor
                 // 単語のベースラインと行のベースラインの距離
                 var distance = Math.Abs(word.BoundingBox.Bottom - avgBottom);
                 
-                // 行の高さの半分以内で、最も近い行を選択
-                if (distance <= Math.Max(yThreshold, lineHeight / 2) && distance < bestMatch)
+                // より精密な境界検出：上下両方向の重複をチェック
+                var wordTop = word.BoundingBox.Top;
+                var wordBottom = word.BoundingBox.Bottom;
+                var lineTop = avgTop;
+                var lineBottom = avgBottom;
+                
+                // 垂直重複を計算
+                var overlapTop = Math.Min(wordTop, lineTop);
+                var overlapBottom = Math.Max(wordBottom, lineBottom);
+                var overlap = Math.Max(0, overlapTop - overlapBottom);
+                var wordHeight = wordTop - wordBottom;
+                var overlapRatio = wordHeight > 0 ? overlap / wordHeight : 0;
+                
+                // 重複率が高い、または距離が閾値内で最も近い行を選択
+                if ((overlapRatio > 0.3 || distance <= Math.Max(yThreshold, lineHeight * 0.6)) && 
+                    distance < bestMatch)
                 {
                     bestMatch = distance;
                     bestLineIndex = i;
@@ -79,7 +93,15 @@ internal static class PdfWordProcessor
             var lastGroup = mergedWords.Last();
             var distance = words[i].BoundingBox.Left - GetMaxRight(lastGroup);
             
-            if (distance < xThreshold)
+            // より精密な単語境界検出
+            var currentWordHeight = words[i].BoundingBox.Height;
+            var lastGroupAvgHeight = lastGroup.Count > 0 ? lastGroup.Average(w => w.BoundingBox.Height) : currentWordHeight;
+            
+            // 文字サイズに基づく動的な閾値調整
+            var adaptiveThreshold = Math.Max(xThreshold, Math.Min(currentWordHeight, lastGroupAvgHeight) * 0.3);
+            
+            // 文字の重複やマイナス距離の場合は強制的に統合
+            if (distance < adaptiveThreshold || distance < 0)
             {
                 // 近接している場合は同じグループに追加
                 lastGroup.Add(words[i]);
