@@ -213,6 +213,16 @@ internal class PdfStructureAnalyzer
             return ElementType.Paragraph;
         }
         
+        // URL または Markdown リンク構文の検出（最高優先度）
+        if (cleanText.Contains("://") || cleanText.Contains("www.") ||
+            (cleanText.Contains("[") && cleanText.Contains("](")) ||
+            cleanText.Contains("![") || 
+            (cleanText.StartsWith("<") && cleanText.EndsWith(">")) ||
+            System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"\[([^\]]+)\]\(([^)]+)\)"))
+        {
+            return ElementType.Paragraph;
+        }
+        
         // リスト項目の判定を最優先（ヘッダー判定より前に実行）
         if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return ElementType.ListItem;
         if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return ElementType.ListItem;
@@ -238,13 +248,6 @@ internal class PdfStructureAnalyzer
             return ElementType.Paragraph;
         }
         
-        // URL または Markdown リンク構文の検出（汎用的）
-        if (cleanText.Contains("://") || cleanText.Contains("www.") ||
-            (cleanText.Contains("[") && cleanText.Contains("](")) ||
-            cleanText.Contains("![") || cleanText.StartsWith("<") && cleanText.EndsWith(">"))
-        {
-            return ElementType.Paragraph;
-        }
         
         // インラインコード検出の強化
         if (cleanText.Contains("`") && !cleanText.StartsWith("```"))

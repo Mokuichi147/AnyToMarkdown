@@ -425,9 +425,9 @@ internal static class MarkdownGenerator
         if (text.StartsWith("-") || text.StartsWith("*") || text.StartsWith("+"))
             return text;
             
-        // インデントレベルを座標から推定
+        // インデントレベルを座標から推定（改良版）
         var indentLevel = CalculateListIndentLevel(element);
-        var indentSpaces = new string(' ', indentLevel * 2);
+        var indentSpaces = new string(' ', Math.Max(0, indentLevel * 2));
         
         // 太字記号（**‒**など）で包まれたリスト記号を処理
         var boldListMatch = System.Text.RegularExpressions.Regex.Match(text, @"^\*\*([‒–—\-\*\+•])\*\*(.*)");
@@ -1542,10 +1542,10 @@ internal static class MarkdownGenerator
         var words = row.Words;
         var cells = new List<string>();
         
-        // 境界が検出されない場合は従来の方法を使用
+        // 境界が検出されない場合は改良されたテキスト分割を使用
         if (words == null || words.Count == 0 || columnBoundaries.Count < 1)
         {
-            return SplitTextIntoCells(text);
+            return SplitTextIntoTableCells(text);
         }
         
         // 列境界に基づいて単語をセルにグループ化
@@ -3016,5 +3016,63 @@ internal static class MarkdownGenerator
         public bool IsLineBreak { get; set; }
         public bool IsWordFragment { get; set; }
         public int OriginalIndex { get; set; }
+    }
+    
+    private static List<string> SplitTextIntoTableCells(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new List<string>();
+        
+        // パイプ文字がある場合は既存のMarkdown表記
+        if (text.Contains("|"))
+        {
+            return text.Split('|')
+                      .Select(cell => cell.Trim())
+                      .Where(cell => !string.IsNullOrEmpty(cell))
+                      .ToList();
+        }
+        
+        // スペースベースの分割（改良版）
+        var words = text.Trim().Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= 1)
+            return words.ToList();
+        
+        // 短い単語（8文字以下）が複数ある場合は各単語を個別のセルとして扱う
+        if (words.Length >= 2 && words.All(w => w.Length <= 8))
+        {
+            return words.ToList();
+        }
+        
+        // 長い単語が混在する場合は、適応的に分割
+        var cells = new List<string>();
+        var currentCell = new StringBuilder();
+        
+        foreach (var word in words)
+        {
+            // 短い単語（3文字以下）や明らかにセル境界と思われる場合
+            if (word.Length <= 3 || 
+                (currentCell.Length > 0 && word.Length <= 6))
+            {
+                if (currentCell.Length > 0)
+                {
+                    cells.Add(currentCell.ToString().Trim());
+                    currentCell.Clear();
+                }
+                cells.Add(word);
+            }
+            else
+            {
+                if (currentCell.Length > 0)
+                    currentCell.Append(" ");
+                currentCell.Append(word);
+            }
+        }
+        
+        if (currentCell.Length > 0)
+        {
+            cells.Add(currentCell.ToString().Trim());
+        }
+        
+        return cells.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
     }
 }
