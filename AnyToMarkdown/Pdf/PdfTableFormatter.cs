@@ -24,26 +24,35 @@ internal static class PdfTableFormatter
             
             for (int colIndex = 0; colIndex < maxColumns; colIndex++)
             {
-                string cellText = colIndex < row.Count 
-                    ? ProcessCellText(row[colIndex])
-                    : "";
+                string cellText = "";
+                if (colIndex < row.Count)
+                {
+                    cellText = ProcessCellText(row[colIndex]);
+                }
+                
+                // 空セルの場合は適切なスペースを追加
+                if (string.IsNullOrWhiteSpace(cellText))
+                {
+                    cellText = " ";
+                }
                     
                 sb.Append($" {cellText} |");
             }
             sb.AppendLine();
             
-            if (rowIndex == 0)
+            // 最初の行の後に区切り線を追加（より柔軟なヘッダー検出）
+            if (rowIndex == 0 || IsLikelyHeaderRow(tableData, rowIndex))
             {
                 sb.Append('|');
                 for (int i = 0; i < maxColumns; i++)
                 {
                     string alignmentMark = columnAlignments[i] switch
                     {
-                        1 => " :---: |",
-                        2 => " ---: |", 
-                        _ => " --- |"   
+                        1 => ":---:",
+                        2 => "---:", 
+                        _ => "---"   
                     };
-                    sb.Append(alignmentMark);
+                    sb.Append($"{alignmentMark}|");
                 }
                 sb.AppendLine();
             }
@@ -123,5 +132,15 @@ internal static class PdfTableFormatter
         }
         
         return alignments;
+    }
+    
+    private static bool IsLikelyHeaderRow(List<List<List<Word>>> tableData, int rowIndex)
+    {
+        if (rowIndex >= tableData.Count) return false;
+        if (rowIndex == 0) return false; // 最初の行は既に処理済み
+        
+        // 簡単なヘッダー検出: フォント情報や位置情報を基にする
+        // （現在は単純に false を返し、最初の行のみをヘッダーとして扱う）
+        return false;
     }
 }

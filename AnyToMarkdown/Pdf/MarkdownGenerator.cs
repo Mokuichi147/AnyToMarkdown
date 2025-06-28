@@ -147,7 +147,7 @@ internal static class MarkdownGenerator
             ElementType.CodeBlock => ConvertCodeBlock(element, allElements, currentIndex),
             ElementType.QuoteBlock => ConvertQuoteBlock(element, allElements, currentIndex),
             ElementType.HorizontalLine => ConvertHorizontalLine(element),
-            ElementType.Paragraph => ConvertParagraph(element),
+            ElementType.Paragraph => ConvertParagraph(element, fontAnalysis),
             _ => element.Content
         };
     }
@@ -236,15 +236,18 @@ internal static class MarkdownGenerator
         // テキスト長分析（短いほど上位レベルの可能性）
         var lengthScore = CalculateTextLengthScore(element.Content);
         
-        // 重み付け統合スコア（フォントサイズ80% + 座標15% + テキスト長5%）
-        var combinedScore = fontSizeScore * 0.8 + coordinateScore * 0.15 + lengthScore * 0.05;
+        // フォントサイズを主軸にした重み付け統合スコア
+        var combinedScore = fontSizeScore * 0.85 + coordinateScore * 0.10 + lengthScore * 0.05;
         
-        // より広い閾値でレベルを決定
-        if (combinedScore >= 0.80) return 1;
-        if (combinedScore >= 0.65) return 2;
-        if (combinedScore >= 0.45) return 3;
-        if (combinedScore >= 0.30) return 4;
-        if (combinedScore >= 0.20) return 5;
+        // フォントサイズの絶対値も考慮したより精密な閾値
+        var baseFontRatio = element.FontSize / fontAnalysis.BaseFontSize;
+        
+        // より精密なレベル決定
+        if (baseFontRatio >= 1.8 || combinedScore >= 0.85) return 1;  // 大見出し
+        if (baseFontRatio >= 1.5 || combinedScore >= 0.70) return 2;  // 中見出し
+        if (baseFontRatio >= 1.3 || combinedScore >= 0.55) return 3;  // 小見出し
+        if (baseFontRatio >= 1.1 || combinedScore >= 0.40) return 4;  // 細見出し
+        if (baseFontRatio >= 1.0 || combinedScore >= 0.25) return 5;  // 最小見出し
         return 6;
     }
     
@@ -252,11 +255,20 @@ internal static class MarkdownGenerator
     {
         if (allSizes.Count == 0) return 0.5;
         
-        var currentSizeRank = allSizes.IndexOf(fontSize);
+        // より詳細なフォントサイズ分析
+        var sortedSizes = allSizes.OrderByDescending(s => s).ToList();
+        var currentSizeRank = sortedSizes.IndexOf(fontSize);
         if (currentSizeRank < 0) return 0.3;
         
-        // 順位を正規化（0-1の範囲）
-        var normalizedRank = 1.0 - ((double)currentSizeRank / Math.Max(allSizes.Count - 1, 1));
+        // フォントサイズの相対的位置を計算
+        var totalSizes = sortedSizes.Count;
+        var normalizedRank = 1.0 - ((double)currentSizeRank / Math.Max(totalSizes - 1, 1));
+        
+        // 上位のサイズに対してボーナススコア
+        if (currentSizeRank == 0) return 1.0;  // 最大サイズ
+        if (currentSizeRank == 1 && totalSizes > 2) return 0.9;  // 第2位
+        if (currentSizeRank == 2 && totalSizes > 3) return 0.8;  // 第3位
+        
         return normalizedRank;
     }
     
@@ -355,22 +367,26 @@ internal static class MarkdownGenerator
         if (text.StartsWith("-") || text.StartsWith("*") || text.StartsWith("+"))
             return text;
             
+        // インデントレベルを座標から推定
+        var indentLevel = CalculateListIndentLevel(element);
+        var indentSpaces = new string(' ', indentLevel * 2);
+        
         // 太字記号（**‒**など）で包まれたリスト記号を処理
         var boldListMatch = System.Text.RegularExpressions.Regex.Match(text, @"^\*\*([‒–—\-\*\+•])\*\*(.*)");
         if (boldListMatch.Success)
         {
             var content = boldListMatch.Groups[2].Value.Trim();
             content = content.Replace("\0", "");
-            return $"  - {content}"; // ネストされたリストとして2スペースインデント
+            return $"{indentSpaces}- {content}";
         }
             
         // 日本語の箇条書き記号を変換
         if (text.StartsWith("・"))
-            return "- " + text.Substring(1).Trim().Replace("\0", "");
+            return $"{indentSpaces}- " + text.Substring(1).Trim().Replace("\0", "");
         if (text.StartsWith("•") || text.StartsWith("◦"))
-            return "- " + text.Substring(1).Trim().Replace("\0", "");
+            return $"{indentSpaces}- " + text.Substring(1).Trim().Replace("\0", "");
         if (text.StartsWith("‒") || text.StartsWith("–") || text.StartsWith("—"))
-            return "- " + text.Substring(1).Trim().Replace("\0", "");
+            return $"{indentSpaces}- " + text.Substring(1).Trim().Replace("\0", "");
             
         // 数字付きリストの処理（より柔軟に）
         var numberListMatch = System.Text.RegularExpressions.Regex.Match(text, @"^(\d{1,3})[\.\)](.*)");
@@ -380,7 +396,7 @@ internal static class MarkdownGenerator
             var content = numberListMatch.Groups[2].Value.Trim();
             // null文字を除去
             content = content.Replace("\0", "");
-            return $"{number}. {content}";
+            return $"{indentSpaces}{number}. {content}";
         }
             
         // 括弧付き数字を変換
@@ -391,12 +407,28 @@ internal static class MarkdownGenerator
             var content = parenNumberMatch.Groups[2].Value.Trim();
             // null文字を除去
             content = content.Replace("\0", "");
-            return $"{number}. {content}";
+            return $"{indentSpaces}{number}. {content}";
         }
             
         // その他はダッシュを付ける
         text = text.Replace("\0", "");
-        return $"- {text}";
+        return $"{indentSpaces}- {text}";
+    }
+    
+    private static int CalculateListIndentLevel(DocumentElement element)
+    {
+        if (element.Words == null || element.Words.Count == 0)
+            return 0;
+            
+        // 左マージンからインデントレベルを推定
+        var leftPosition = element.Words.Min(w => w.BoundingBox.Left);
+        var baseLeftPosition = 50.0; // ベースライン
+        
+        // インデントレベルを計算（30ポイントごとに1レベル）
+        var indentLevel = Math.Max(0, (int)((leftPosition - baseLeftPosition) / 30.0));
+        
+        // 最大3レベルまでに制限
+        return Math.Min(indentLevel, 3);
     }
     
     private static string ConvertHorizontalLine(DocumentElement element)
@@ -1744,17 +1776,72 @@ internal static class MarkdownGenerator
         return candidates.ToList();
     }
 
-    private static string ConvertParagraph(DocumentElement element)
+    private static string ConvertParagraph(DocumentElement element, FontAnalysis fontAnalysis)
     {
         var text = element.Content.Trim();
         
         // エスケープ文字の正規化
         text = NormalizeEscapeCharacters(text);
         
-        // 強調表現の復元
-        text = RestoreFormatting(text);
+        // フォント情報を使った強調表現の復元
+        text = RestoreFormattingWithFontInfo(text, element, fontAnalysis);
         
         return text;
+    }
+    
+    private static string RestoreFormattingWithFontInfo(string text, DocumentElement element, FontAnalysis fontAnalysis)
+    {
+        if (element.Words == null || element.Words.Count == 0)
+        {
+            return RestoreFormatting(text);
+        }
+        
+        var sb = new StringBuilder();
+        
+        // 単語レベルでフォント情報を分析して書式設定を復元
+        foreach (var word in element.Words)
+        {
+            var wordText = word.Text ?? "";
+            
+            // フォント名から太字・斜体を検出
+            bool isBold = IsWordBold(word);
+            bool isItalic = IsWordItalic(word);
+            
+            if (isBold && isItalic)
+            {
+                wordText = $"***{wordText}***";
+            }
+            else if (isBold)
+            {
+                wordText = $"**{wordText}**";
+            }
+            else if (isItalic)
+            {
+                wordText = $"*{wordText}*";
+            }
+            
+            sb.Append(wordText);
+            sb.Append(" ");
+        }
+        
+        var result = sb.ToString().Trim();
+        
+        // 従来の方法も適用
+        result = RestoreFormatting(result);
+        
+        return result;
+    }
+    
+    private static bool IsWordBold(Word word)
+    {
+        var fontName = word.FontName?.ToLowerInvariant() ?? "";
+        return fontName.Contains("bold") || fontName.Contains("heavy") || fontName.Contains("black");
+    }
+    
+    private static bool IsWordItalic(Word word)
+    {
+        var fontName = word.FontName?.ToLowerInvariant() ?? "";
+        return fontName.Contains("italic") || fontName.Contains("oblique") || fontName.Contains("slant");
     }
     
     private static string NormalizeEscapeCharacters(string text)
@@ -1837,7 +1924,7 @@ internal static class MarkdownGenerator
         
         var sb = new StringBuilder();
         
-        // 言語の検出
+        // 言語の検出を改善
         string language = DetectCodeLanguage(codeLines);
         
         sb.AppendLine($"```{language}");
@@ -1846,25 +1933,37 @@ internal static class MarkdownGenerator
         {
             var content = line.Content.Trim();
             
-            // 既に``` で囲まれている場合は除去
-            if (content.StartsWith("```")) 
-            {
-                content = content.Substring(3).Trim();
-            }
-            if (content.EndsWith("```"))
-            {
-                content = content.Substring(0, content.Length - 3).Trim();
-            }
+            // 既存のコードブロック記号を除去
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"^```\w*", "").Trim();
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"```$", "").Trim();
             
-            // コードブロック内の太字フォーマットを除去
-            content = StripMarkdownFormatting(content);
+            // Markdown書式設定を除去してクリーンなコードにする
+            content = CleanCodeContent(content);
             
-            sb.AppendLine(content);
+            // 空行でない場合のみ追加
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                sb.AppendLine(content);
+            }
         }
         
         sb.AppendLine("```");
         
         return sb.ToString();
+    }
+    
+    private static string CleanCodeContent(string content)
+    {
+        // コードブロック内の不要な書式設定を除去
+        content = System.Text.RegularExpressions.Regex.Replace(content, @"\*\*(.*?)\*\*", "$1");
+        content = System.Text.RegularExpressions.Regex.Replace(content, @"\*(.*?)\*", "$1");
+        content = System.Text.RegularExpressions.Regex.Replace(content, @"__(.*?)__", "$1");
+        content = System.Text.RegularExpressions.Regex.Replace(content, @"_(.*?)_", "$1");
+        
+        // nullバイトを除去
+        content = content.Replace("\0", "");
+        
+        return content;
     }
     
     private static string GenerateMarkdownQuoteBlock(List<DocumentElement> quoteLines)

@@ -86,16 +86,22 @@ internal class PdfTableDetector
         List<List<Word>> lines, int currentIndex, int startLineIndex, List<double> columnPositions)
     {
         // 列数の検証を緩和（空のセルを許可）
-        if (nextLineWords.Count == 0 || nextLineWords.Count > expectedColumnCount * 2)
+        if (nextLineWords.Count == 0)
         {
             return false;
         }
         
-        // 行間隔チェックを緩和
-        if (!IsLineSpacingConsistent(lines, currentIndex, startLineIndex))
+        // 列数が大幅に異なる場合は無効
+        if (nextLineWords.Count > expectedColumnCount * 1.5 && expectedColumnCount > 1)
         {
-            // 行間隔が一致しなくても、列の配置が合っていればテーブル行と認識
-            if (!AreColumnsAligned(nextLineWords, columnPositions))
+            return false;
+        }
+        
+        // 列配置の確認（より柔軟に）
+        if (!AreColumnsAligned(nextLineWords, columnPositions))
+        {
+            // 列配置が合わない場合、最低限の要件をチェック
+            if (nextLineWords.Count < Math.Max(1, expectedColumnCount / 2))
             {
                 return false;
             }
@@ -120,22 +126,28 @@ internal class PdfTableDetector
     
     private bool AreColumnsAligned(List<List<Word>> nextLineWords, List<double> columnPositions)
     {
-        if (nextLineWords.Count < 2) return false;
+        if (nextLineWords.Count == 0) return false;
+        if (columnPositions.Count == 0) return false;
         
-        for (int col = 0; col < Math.Min(nextLineWords.Count, columnPositions.Count); col++)
+        // 単一列の場合は柔軟に許可
+        if (nextLineWords.Count == 1 || columnPositions.Count == 1) return true;
+        
+        int alignedColumns = 0;
+        int columnsToCheck = Math.Min(nextLineWords.Count, columnPositions.Count);
+        
+        for (int col = 0; col < columnsToCheck; col++)
         {
-            if (col < nextLineWords.Count)
+            double midPoint = (nextLineWords[col].First().BoundingBox.Left + 
+                              nextLineWords[col].Last().BoundingBox.Right) / 2;
+            
+            // より寛容な許容範囲
+            if (Math.Abs(midPoint - columnPositions[col]) <= _horizontalTolerance * 4)
             {
-                double midPoint = (nextLineWords[col].First().BoundingBox.Left + 
-                                  nextLineWords[col].Last().BoundingBox.Right) / 2;
-                
-                if (Math.Abs(midPoint - columnPositions[col]) > _horizontalTolerance * 3)
-                {
-                    return false;
-                }
+                alignedColumns++;
             }
         }
         
-        return true;
+        // 半分以上の列が配置されていれば有効
+        return alignedColumns >= Math.Max(1, columnsToCheck / 2);
     }
 }
