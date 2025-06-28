@@ -220,9 +220,16 @@ internal class PdfStructureAnalyzer
         
         // 太字でフォーマットされたリスト記号も検出
         if (text.StartsWith("**‒**") || text.StartsWith("**–**") || text.StartsWith("**—**")) return ElementType.ListItem;
-        if (text.StartsWith("**-**") || text.StartsWith("**+**")) return ElementType.ListItem;
+        if (text.StartsWith("**-**") || text.StartsWith("**+**") || text.StartsWith("***") && text.Contains("***")) return ElementType.ListItem;
         if (text.StartsWith("**•**") || text.StartsWith("**・**")) return ElementType.ListItem;
-        if (text.StartsWith("***") && text.Length > 3 && !text.StartsWith("****")) return ElementType.ListItem; // **\*** パターン
+        
+        // より複雑な太字リストパターンの検出
+        var boldListPattern = System.Text.RegularExpressions.Regex.Match(text, @"^\*\*([‒–—\-\*\+•・])\*\*");
+        if (boldListPattern.Success) return ElementType.ListItem;
+        
+        // 数字付きリストの検出
+        var numberedListPattern = System.Text.RegularExpressions.Regex.Match(cleanText, @"^(\d{1,3})[\.\)]");
+        if (numberedListPattern.Success) return ElementType.ListItem;
         
         // インラインコードまたは特殊構文の検出（汎用的）
         if (cleanText.Contains("`") || 
@@ -245,10 +252,19 @@ internal class PdfStructureAnalyzer
             return ElementType.Paragraph;
         }
         
-        // ヘッダー判定（フォントサイズと内容の両方を考慮）
+        // ヘッダー判定（フォントサイズと構造分析）
         bool isLargeFont = maxFontSize > fontAnalysis.LargeFontThreshold;
+        
+        // 改善されたヘッダー検出：座標とフォントサイズベース
+        bool hasHeaderStructure = IsHeaderStructure(cleanText, words, maxFontSize, fontAnalysis);
         bool hasHeaderContent = IsHeaderLike(cleanText);
         bool isShortText = cleanText.Length <= 20; // 短いテキストはヘッダーの可能性が高い
+        
+        // ヘッダー判定の優先処理
+        if (hasHeaderStructure && !IsLikelyTableContent(cleanText, words))
+        {
+            return ElementType.Header;
+        }
         
         // 段落として扱うべきパターンの除外（汎用的判定）
         if (cleanText.EndsWith(":") && cleanText.Length > 5) return ElementType.Paragraph;
@@ -365,16 +381,21 @@ internal class PdfStructureAnalyzer
         
         // テーブルのような複数の短い単語が並んでいる場合
         var words = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length >= 2 && words.Length <= 6)
+        if (words.Length >= 3 && words.Length <= 6) // 3列以上でテーブルの可能性を高める
         {
             // すべて短い単語（各8文字以下）で構成されている
             if (words.All(w => w.Length <= 8))
             {
-                return true;
+                // ただし、ヘッダーらしいパターンは除外
+                var combinedLength = cleanText.Replace(" ", "").Length;
+                if (combinedLength > 20) // 長すぎる場合はテーブルの可能性
+                {
+                    return true;
+                }
             }
             
             // 数字・アルファベットの組み合わせパターン（A1, B1, C1など）
-            if (words.Any(w => w.Length <= 3 && (w.Any(char.IsDigit) || w.All(char.IsUpper))))
+            if (words.Count(w => w.Length <= 3 && (w.Any(char.IsDigit) || w.All(char.IsUpper))) >= 2)
             {
                 return true;
             }
@@ -592,6 +613,39 @@ internal class PdfStructureAnalyzer
         if (maxGap > avgFontSize * 2) return true;
 
         return false;
+    }
+    
+    private static bool IsHeaderStructure(string text, List<Word> words, double fontSize, FontAnalysis fontAnalysis)
+    {
+        if (string.IsNullOrWhiteSpace(text) || words == null || words.Count == 0) return false;
+        
+        var cleanText = text.Trim();
+        
+        // 明確にヘッダーではない要素を除外
+        if (cleanText.Contains("|") || cleanText.Contains("```") || cleanText.StartsWith(">")) return false;
+        if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return false;
+        if (cleanText.Contains("://") || cleanText.Contains("[") && cleanText.Contains("](")) return false;
+        
+        // フォントサイズベースの判定
+        bool hasLargeFont = fontSize > fontAnalysis.LargeFontThreshold;
+        
+        // 座標ベースの構造判定：左揃えでインデントが少ない
+        var leftMostPosition = words.Min(w => w.BoundingBox.Left);
+        bool isLeftAligned = leftMostPosition <= 80.0; // 左から80ポイント以内
+        
+        // テキスト特性分析
+        var wordCount = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Length;
+        bool isShortText = cleanText.Length <= 50;
+        bool isConceptualText = wordCount <= 8; // 概念的な短い表現
+        
+        // ヘッダーらしい構造的特徴
+        bool hasHeaderCharacteristics = 
+            isShortText && isConceptualText && isLeftAligned &&
+            !cleanText.EndsWith("。") && !cleanText.EndsWith(".") &&
+            !cleanText.Contains("、") && !cleanText.Contains(",");
+        
+        // フォントサイズが大きいか、構造的特徴を持つ場合はヘッダー
+        return hasLargeFont || hasHeaderCharacteristics;
     }
     
     private static bool IsCodeBlockLike(string text, List<Word> words, FontAnalysis fontAnalysis)
