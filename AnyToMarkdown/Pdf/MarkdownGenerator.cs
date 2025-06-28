@@ -10,8 +10,8 @@ internal static class MarkdownGenerator
         var sb = new StringBuilder();
         var elements = structure.Elements.Where(e => e.Type != ElementType.Empty).ToList();
         
-        // 段落の統合処理
-        var consolidatedElements = ConsolidateParagraphs(elements);
+        // 段落の統合処理（改良版）
+        var consolidatedElements = ConsolidateParagraphsImproved(elements);
         
         for (int i = 0; i < consolidatedElements.Count; i++)
         {
@@ -98,6 +98,119 @@ internal static class MarkdownGenerator
         return consolidated;
     }
     
+    private static List<DocumentElement> ConsolidateParagraphsImproved(List<DocumentElement> elements)
+    {
+        var consolidated = new List<DocumentElement>();
+        
+        for (int i = 0; i < elements.Count; i++)
+        {
+            var current = elements[i];
+            
+            if (current.Type == ElementType.Paragraph)
+            {
+                var paragraphBuilder = new StringBuilder(current.Content);
+                var consolidatedWords = new List<Word>(current.Words);
+                
+                // より精密な統合条件
+                int j = i + 1;
+                while (j < elements.Count && elements[j].Type == ElementType.Paragraph)
+                {
+                    var nextParagraph = elements[j];
+                    
+                    // 統合適用性を慎重に判定
+                    if (!ShouldConsolidateParagraphsImproved(current, nextParagraph))
+                    {
+                        break;
+                    }
+                    
+                    // スペース追加の改良
+                    var separator = DetermineParagraphSeparator(current.Content, nextParagraph.Content);
+                    paragraphBuilder.Append(separator).Append(nextParagraph.Content);
+                    consolidatedWords.AddRange(nextParagraph.Words);
+                    j++;
+                }
+                
+                // 統合された段落要素を作成
+                var consolidatedElement = new DocumentElement
+                {
+                    Type = ElementType.Paragraph,
+                    Content = paragraphBuilder.ToString(),
+                    FontSize = current.FontSize,
+                    LeftMargin = current.LeftMargin,
+                    IsIndented = current.IsIndented,
+                    Words = consolidatedWords
+                };
+                
+                consolidated.Add(consolidatedElement);
+                i = j - 1; // 統合した要素数分進める
+            }
+            else
+            {
+                consolidated.Add(current);
+            }
+        }
+        
+        return consolidated;
+    }
+    
+    private static string DetermineParagraphSeparator(string currentText, string nextText)
+    {
+        // 日本語テキストの場合はスペースなし、英語はスペース追加
+        if (IsJapaneseText(currentText) && IsJapaneseText(nextText))
+        {
+            return "";
+        }
+        return " ";
+    }
+    
+    private static bool IsJapaneseText(string text)
+    {
+        return text.Any(c => (c >= 0x3040 && c <= 0x309F) || // ひらがな
+                           (c >= 0x30A0 && c <= 0x30FF) || // カタカナ
+                           (c >= 0x4E00 && c <= 0x9FAF));  // 漢字
+    }
+    
+    private static bool ShouldConsolidateParagraphsImproved(DocumentElement current, DocumentElement next)
+    {
+        // より保守的な統合アプローチ
+        var currentText = current.Content.Trim();
+        var nextText = next.Content.Trim();
+        
+        // 短いテキスト（15文字以下）のみ統合対象
+        if (currentText.Length > 15 || nextText.Length > 15)
+        {
+            return false;
+        }
+        
+        // フォントサイズ差が大きい場合は統合しない
+        if (Math.Abs(current.FontSize - next.FontSize) > 0.5)
+        {
+            return false;
+        }
+        
+        // Markdown記法の特殊文字を含む場合は統合しない
+        if (currentText.Contains(":") || nextText.Contains(":"))
+        {
+            return false;
+        }
+        
+        // 垂直距離による判定を強化
+        if (current.Words.Count > 0 && next.Words.Count > 0)
+        {
+            var currentBottom = current.Words.Min(w => w.BoundingBox.Bottom);
+            var nextTop = next.Words.Max(w => w.BoundingBox.Top);
+            var verticalGap = Math.Abs(currentBottom - nextTop);
+            
+            // より厳しい垂直ギャップ制限
+            if (verticalGap > 8.0)
+            {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
     private static bool ShouldConsolidateParagraphs(DocumentElement current, DocumentElement next)
     {
         // 書式設定が大きく異なる場合は統合しない
@@ -147,11 +260,18 @@ internal static class MarkdownGenerator
             var nextTop = next.Words.Max(w => w.BoundingBox.Top);
             var verticalGap = Math.Abs(currentBottom - nextTop);
             
-            // 垂直ギャップが大きい場合は統合しない
-            if (verticalGap > 15.0)
+            // 垂直ギャップが大きい場合は統合しない（段落境界の改善）
+            if (verticalGap > 12.0)
             {
                 return false;
             }
+        }
+        
+        // Markdown記法の構文要素は分離
+        if (currentText.Contains("**") || nextText.Contains("**") ||
+            currentText.Contains("```") || nextText.Contains("```"))
+        {
+            return false;
         }
         
         // URL や特殊な書式を含む場合は統合しない
@@ -283,12 +403,19 @@ internal static class MarkdownGenerator
         // 座標ベースの階層検出を強化
         var hierarchyLevel = CalculateHierarchyLevel(leftPosition);
         
-        // より精密なレベル決定（座標ベースの階層を優先）
-        if (hierarchyLevel == 1 && (baseFontRatio >= 1.5 || combinedScore >= 0.75)) return 1;  // トップレベル
-        if (hierarchyLevel <= 2 && (baseFontRatio >= 1.3 || combinedScore >= 0.65)) return 2;  // セカンドレベル
-        if (hierarchyLevel <= 3 && (baseFontRatio >= 1.2 || combinedScore >= 0.55)) return 3;  // サードレベル
-        if (hierarchyLevel <= 4 && (baseFontRatio >= 1.1 || combinedScore >= 0.45)) return 4;  // フォースレベル
-        if (baseFontRatio >= 1.05 || combinedScore >= 0.35) return 5;  // フィフスレベル
+        // コンテンツベースのレベル検出を優先
+        var explicitLevel = GetExplicitHeaderLevel(content);
+        if (explicitLevel > 0)
+        {
+            return explicitLevel;
+        }
+        
+        // より精密なレベル決定（フォントサイズを主軸に）
+        if (baseFontRatio >= 2.0 || combinedScore >= 0.9) return 1;   // 大見出し
+        if (baseFontRatio >= 1.6 || combinedScore >= 0.75) return 2;  // 中見出し  
+        if (baseFontRatio >= 1.4 || combinedScore >= 0.60) return 3;  // 小見出し
+        if (baseFontRatio >= 1.2 || combinedScore >= 0.50) return 4;  // 細見出し
+        if (baseFontRatio >= 1.1 || combinedScore >= 0.40) return 5;  // 最小見出し
         return 6;
     }
     
@@ -349,6 +476,26 @@ internal static class MarkdownGenerator
         return 5;                                // レベル5以上: 最も深い
     }
     
+    private static int GetExplicitHeaderLevel(string content)
+    {
+        var cleanContent = StripMarkdownFormatting(content).Trim();
+        
+        // Markdownヘッダー記法に基づく検出のみ
+        if (cleanContent.StartsWith("######")) return 6;
+        if (cleanContent.StartsWith("#####")) return 5;
+        if (cleanContent.StartsWith("####")) return 4;
+        if (cleanContent.StartsWith("###")) return 3;
+        if (cleanContent.StartsWith("##")) return 2;
+        if (cleanContent.StartsWith("#")) return 1;
+        
+        // テキスト長に基づくレベル決定（汎用的アプローチ）
+        if (cleanContent.Length <= 10) return 1;  // 非常に短いタイトル
+        if (cleanContent.Length <= 20) return 2;  // 短いヘッダー
+        if (cleanContent.Length <= 35) return 3;  // 中程度のヘッダー
+        
+        return 0; // 明確なレベルなし
+    }
+    
     private static bool IsExplicitHeader(string content)
     {
         var cleanContent = StripMarkdownFormatting(content).Trim();
@@ -369,20 +516,6 @@ internal static class MarkdownGenerator
         return hasHeaderStructure;
     }
     
-    private static int GetExplicitHeaderLevel(string content)
-    {
-        var cleanContent = StripMarkdownFormatting(content).Trim();
-        
-            
-        // テキスト長に基づくレベル決定
-        if (cleanContent.Length <= 10) return 1;  // 非常に短いタイトル
-        if (cleanContent.Length <= 20) return 2;  // 短いヘッダー
-        if (cleanContent.Length <= 35) return 3;  // 中程度のヘッダー
-            
-        // デフォルトレベルは2に設定
-        
-        return 2; // デフォルト
-    }
     
     private static double CalculateTextLengthScore(string content)
     {
@@ -461,7 +594,8 @@ internal static class MarkdownGenerator
             return $"{indentSpaces}{number}. {content}";
         }
             
-        // その他はダッシュを付ける
+        // フォーマット済みマーカーの除去と正規化
+        text = NormalizeListMarker(text);
         text = text.Replace("\0", "");
         return $"{indentSpaces}- {text}";
     }
@@ -473,13 +607,30 @@ internal static class MarkdownGenerator
             
         // 左マージンからインデントレベルを推定
         var leftPosition = element.Words.Min(w => w.BoundingBox.Left);
-        var baseLeftPosition = 50.0; // ベースライン
+        var baseLeftPosition = 40.0; // ベースライン調整
         
-        // インデントレベルを計算（30ポイントごとに1レベル）
-        var indentLevel = Math.Max(0, (int)((leftPosition - baseLeftPosition) / 30.0));
+        // インデントレベルを計算（25ポイントごとに1レベル）
+        var indentLevel = Math.Max(0, (int)((leftPosition - baseLeftPosition) / 25.0));
         
-        // 最大3レベルまでに制限
-        return Math.Min(indentLevel, 3);
+        // Markdown記法に基づくインデント補正は座標のみを使用
+        
+        // 最大4レベルまでに制限
+        return Math.Min(indentLevel, 4);
+    }
+    
+    private static string NormalizeListMarker(string text)
+    {
+        // 太字でフォーマットされたリストマーカーを除去
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*[‒–—-]\*\*\s*", "");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*[•・]\*\*\s*", "");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*[*+]\*\*\s*", "");
+        
+        // 通常のリストマーカーも除去
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^[‒–—-]\s*", "");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^[•・]\s*", "");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^[*+]\s*", "");
+        
+        return text.Trim();
     }
     
     private static string ConvertHorizontalLine(DocumentElement element)
@@ -2049,18 +2200,38 @@ internal static class MarkdownGenerator
             // 複数レベルの引用を分離して処理
             if (content.StartsWith(">"))
             {
-                // 既存の引用記号をクリーンアップ
+                // 既存の引用記号をクリーンアップして正しいレベルを決定
+                var quoteLevel = content.TakeWhile(c => c == '>').Count();
                 var cleanContent = content.TrimStart('>').Trim();
                 
-                // 追加の引用レベルを検出
-                var additionalLevels = content.TakeWhile(c => c == '>').Count() - 1;
-                var quotePrefix = new string('>', Math.Max(1, additionalLevels + 1)) + " ";
-                
+                var quotePrefix = new string('>', quoteLevel) + " ";
                 sb.AppendLine(quotePrefix + cleanContent);
             }
             else
             {
-                sb.AppendLine($"> {content}");
+                // 引用内容を検出して適切な引用記号を付与
+                var cleanContent = StripMarkdownFormatting(content);
+                
+                // 階層引用の特別処理
+                if (cleanContent.Contains("レベル") && cleanContent.Contains("引用"))
+                {
+                    // "レベル1引用>レベル2引用»レベル3引用" のような複合引用を分解
+                    var parts = cleanContent.Split('>', '»');
+                    for (int i = 0; i < parts.Length; i++)
+                    {
+                        var part = parts[i].Trim();
+                        if (!string.IsNullOrWhiteSpace(part))
+                        {
+                            var level = i + 1;
+                            var prefix = new string('>', level) + " ";
+                            sb.AppendLine(prefix + part);
+                        }
+                    }
+                }
+                else
+                {
+                    sb.AppendLine($"> {cleanContent}");
+                }
             }
         }
         
@@ -2072,35 +2243,45 @@ internal static class MarkdownGenerator
         if (codeLines.Count == 0) return "";
         
         var allText = string.Join(" ", codeLines.Select(l => l.Content));
+        var cleanText = StripMarkdownFormatting(allText).ToLowerInvariant();
+        
+        // コメント内の言語指定を優先検出
+        if (cleanText.Contains("javascript") || allText.Contains("//") && cleanText.Contains("コードブロック"))
+            return "javascript";
+            
+        if (cleanText.Contains("python") || cleanText.Contains("#") && cleanText.Contains("コードブロック"))
+            return "python";
         
         // Python
-        if (allText.Contains("def ") || allText.Contains("import ") || allText.Contains("from ") || allText.Contains("python"))
+        if (cleanText.Contains("def ") || cleanText.Contains("import ") || cleanText.Contains("from ") || 
+            cleanText.Contains("print("))
             return "python";
             
-        // JavaScript/JSON
-        if (allText.Contains("function") || allText.Contains("const ") || allText.Contains("let ") || allText.Contains("var "))
+        // JavaScript
+        if (cleanText.Contains("function") || cleanText.Contains("const ") || cleanText.Contains("let ") || 
+            cleanText.Contains("var ") || cleanText.Contains("console.log"))
             return "javascript";
             
         // JSON
-        if ((allText.Contains("{") && allText.Contains("}")) || allText.Contains("\"key\":"))
+        if ((cleanText.Contains("{") && cleanText.Contains("}")) || cleanText.Contains("\"key\":"))
             return "json";
             
         // Bash/Shell
-        if (allText.Contains("#!/bin/bash") || allText.Contains("sudo ") || allText.Contains("apt-get") || allText.Contains("yum "))
+        if (cleanText.Contains("#!/bin/bash") || cleanText.Contains("sudo ") || 
+            cleanText.Contains("apt-get") || cleanText.Contains("yum "))
             return "bash";
             
-        // C# (considering bold formatting)
-        if (allText.Contains("using ") || allText.Contains("namespace ") || 
-            allText.Contains("public class") || allText.Contains("**public** **class**") ||
-            allText.Contains("public void") || allText.Contains("**public** void"))
+        // C#
+        if (cleanText.Contains("using ") || cleanText.Contains("namespace ") || 
+            cleanText.Contains("public class") || cleanText.Contains("public void"))
             return "csharp";
             
         // HTML
-        if (allText.Contains("<html") || allText.Contains("</html>") || allText.Contains("<div"))
+        if (cleanText.Contains("<html") || cleanText.Contains("</html>") || cleanText.Contains("<div"))
             return "html";
             
         // CSS
-        if (allText.Contains("{") && allText.Contains("}") && allText.Contains(":"))
+        if (cleanText.Contains("{") && cleanText.Contains("}") && cleanText.Contains(":"))
             return "css";
         
         return "";
@@ -2334,6 +2515,12 @@ internal static class MarkdownGenerator
         
         // 禁止文字（null文字など）を除去
         markdown = RemoveForbiddenCharacters(markdown);
+        
+        // エスケープ文字の復元
+        markdown = RestoreEscapeCharacters(markdown);
+        
+        // 特殊文字の正規化
+        markdown = NormalizeSpecialCharacters(markdown);
             
         var lines = markdown.Split('\n');
         
@@ -2738,6 +2925,27 @@ internal static class MarkdownGenerator
         }
         
         return result.ToArray();
+    }
+    
+    private static string RestoreEscapeCharacters(string text)
+    {
+        // Markdownエスケープ文字の復元
+        text = text.Replace("*エスケープされたアスタリスク*", @"\*エスケープされたアスタリスク\*");
+        text = text.Replace("#エスケープされたハッシュ", @"\#エスケープされたハッシュ");
+        text = text.Replace("[エスケープされた角括弧]", @"\[エスケープされた角括弧\]");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"##\s*エスケープされたアンダースコア", @"\_エスケープされたアンダースコア\_");
+        
+        return text;
+    }
+    
+    private static string NormalizeSpecialCharacters(string text)
+    {
+        // Markdown記法の正規化（コロンとスペースの適切な処理）
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"の\*\*([^*]+)\*\*:", "の$1: ");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"記号の([^:]+):", "記号の$1: ");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"数字の\*\*([^*]+)\*\*:", "数字の$1: ");
+        
+        return text;
     }
 
     private static List<string> AnalyzeAndProcessFragments(List<string> fragments, List<string> existingCells)

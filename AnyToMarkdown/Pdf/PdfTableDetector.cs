@@ -57,18 +57,35 @@ internal class PdfTableDetector
             rowCount++;
         }
         
-        // テーブル検出基準を緩和
+        // テーブル検出基準を厳格化（品質向上）
         if (rowCount >= 2 && firstLineWords.Count >= 2)
         {
-            return new TableDetectionResult
+            // テーブルの一貫性をチェック
+            var consistency = CalculateTableConsistency(tableLines);
+            if (consistency >= 0.6) // 60%以上の一貫性が必要
             {
-                IsTable = true,
-                TableLines = tableLines,
-                RowCount = rowCount
-            };
+                return new TableDetectionResult
+                {
+                    IsTable = true,
+                    TableLines = tableLines,
+                    RowCount = rowCount
+                };
+            }
         }
         
         return new TableDetectionResult { IsTable = false };
+    }
+    
+    private double CalculateTableConsistency(List<List<List<Word>>> tableLines)
+    {
+        if (tableLines.Count < 2) return 0.0;
+        
+        // 各行の列数を比較
+        var columnCounts = tableLines.Select(row => row.Count).ToList();
+        var mostFrequentCount = columnCounts.GroupBy(x => x).OrderByDescending(g => g.Count()).First().Key;
+        var consistentRows = columnCounts.Count(c => Math.Abs(c - mostFrequentCount) <= 1);
+        
+        return (double)consistentRows / tableLines.Count;
     }
     
     private List<double> GetColumnPositions(List<List<Word>> firstLineWords)

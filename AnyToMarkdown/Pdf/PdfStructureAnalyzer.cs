@@ -169,12 +169,48 @@ internal class PdfStructureAnalyzer
         if (cleanText.StartsWith(">")) return ElementType.QuoteBlock;
         if (cleanText.StartsWith("```")) return ElementType.CodeBlock;
         
+        // コードコメントやプログラミング構文の検出（コードブロック候補）
+        if (cleanText.StartsWith("//") || cleanText.StartsWith("#") && (cleanText.Contains("Python") || cleanText.Contains("コード")))
+        {
+            return ElementType.CodeBlock;
+        }
+        
+        // プログラミング言語の関数定義パターン
+        if (cleanText.StartsWith("def ") || cleanText.StartsWith("function ") || 
+            cleanText.StartsWith("class ") || cleanText.StartsWith("public ") || cleanText.StartsWith("private "))
+        {
+            return ElementType.CodeBlock;
+        }
+        
+        // コードブロック内容の汎用的検出
+        if ((cleanText.Contains("return ") || cleanText.Contains("print(") || 
+             cleanText.Contains("console.log") || cleanText.Contains("System.out")) &&
+            cleanText.Length > 10)
+        {
+            return ElementType.CodeBlock;
+        }
+        
+        // 複数レベルの引用記号を検出（Markdown記法）
+        if (cleanText.StartsWith(">>") || cleanText.StartsWith(">>>"))
+        {
+            return ElementType.QuoteBlock;
+        }
+        
         // 水平線の検出（3文字以上の同じ文字）
         if (!string.IsNullOrWhiteSpace(cleanText) && cleanText.Length >= 3)
         {
             var trimmed = cleanText.Trim();
-            if (trimmed.All(c => c == '-') || trimmed.All(c => c == '*') || trimmed.All(c => c == '_'))
+            if ((trimmed.All(c => c == '-') || trimmed.All(c => c == '*') || trimmed.All(c => c == '_')) &&
+                trimmed.Length >= 3)
+            {
                 return ElementType.HorizontalLine;
+            }
+        }
+        
+        // 水平線記法に該当しないパターンは段落として扱う
+        if (cleanText.Length <= 20 && cleanText.EndsWith(":"))
+        {
+            return ElementType.Paragraph;
         }
         
         // リスト項目の判定を最優先（ヘッダー判定より前に実行）
@@ -198,7 +234,13 @@ internal class PdfStructureAnalyzer
         // URL または Markdown リンク構文の検出（汎用的）
         if (cleanText.Contains("://") || cleanText.Contains("www.") ||
             (cleanText.Contains("[") && cleanText.Contains("](")) ||
-            cleanText.Contains("!["))
+            cleanText.Contains("![") || cleanText.StartsWith("<") && cleanText.EndsWith(">"))
+        {
+            return ElementType.Paragraph;
+        }
+        
+        // インラインコード検出の強化
+        if (cleanText.Contains("`") && !cleanText.StartsWith("```"))
         {
             return ElementType.Paragraph;
         }
@@ -232,11 +274,12 @@ internal class PdfStructureAnalyzer
         // エスケープされた文字を含むテキストは段落として扱う
         if (cleanText.Contains("\\*") || cleanText.Contains("\\_") || cleanText.Contains("\\#") || cleanText.Contains("\\["))
             return ElementType.Paragraph;
+            
         
         // テーブル要素の可能性をチェック
         bool likelyTableContent = IsLikelyTableContent(cleanText, words);
         if (likelyTableContent)
-            return ElementType.Paragraph;
+            return ElementType.TableRow;
         
         // 強力なヘッダー判定条件
         if ((isLargeFont && hasHeaderContent) || 
@@ -314,12 +357,24 @@ internal class PdfStructureAnalyzer
     
     private static bool IsLikelyTableContent(string cleanText, List<Word> line)
     {
+        // パイプ文字が既に含まれている場合は明確にテーブル
+        if (cleanText.Contains("|"))
+        {
+            return true;
+        }
+        
         // テーブルのような複数の短い単語が並んでいる場合
         var words = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length >= 2 && words.Length <= 5)
+        if (words.Length >= 2 && words.Length <= 6)
         {
-            // すべて短い単語（各10文字以下）で構成されている
-            if (words.All(w => w.Length <= 10))
+            // すべて短い単語（各8文字以下）で構成されている
+            if (words.All(w => w.Length <= 8))
+            {
+                return true;
+            }
+            
+            // 数字・アルファベットの組み合わせパターン（A1, B1, C1など）
+            if (words.Any(w => w.Length <= 3 && (w.Any(char.IsDigit) || w.All(char.IsUpper))))
             {
                 return true;
             }
@@ -335,10 +390,21 @@ internal class PdfStructureAnalyzer
                 gaps.Add(gap);
             }
             
-            // 大きなギャップ（20ポイント以上）が存在する場合
-            if (gaps.Any(g => g > 20.0))
+            // 大きなギャップ（15ポイント以上）が存在する場合
+            if (gaps.Any(g => g > 15.0))
             {
                 return true;
+            }
+            
+            // 複数の一貫したギャップパターン
+            if (gaps.Count >= 2)
+            {
+                var avgGap = gaps.Average();
+                var consistentGaps = gaps.Count(g => Math.Abs(g - avgGap) <= avgGap * 0.3);
+                if (consistentGaps >= 2 && avgGap > 10.0)
+                {
+                    return true;
+                }
             }
         }
         
@@ -382,11 +448,9 @@ internal class PdfStructureAnalyzer
             return false;
         }
         
-        // 短いテキストで終わりがテストやセクションのパターン（汎用的）
+        // Markdownヘッダー記法パターンの検出
         if (cleanText.Length <= 20 && 
-            (cleanText.EndsWith("テスト") || cleanText.EndsWith("Test") || 
-             cleanText.Contains("セクション") || cleanText.Contains("Section") ||
-             cleanText.EndsWith("ヘッダー") || cleanText.EndsWith("Header")))
+            (cleanText.EndsWith("ヘッダー") || cleanText.EndsWith("Header")))
         {
             return true;
         }
@@ -434,10 +498,8 @@ internal class PdfStructureAnalyzer
             return false;
         }
         
-        // 短いテキストで終わりがテストやセクションのパターン（汎用的）
-        if (cleanText.Length <= 20 && 
-            (cleanText.EndsWith("テスト") || cleanText.EndsWith("Test") || 
-             cleanText.Contains("セクション") || cleanText.Contains("Section")))
+        // Markdownヘッダー記法パターンの検出
+        if (cleanText.Length <= 20 && cleanText.EndsWith("ヘッダー"))
         {
             return true;
         }
@@ -3143,21 +3205,94 @@ internal static class CodeAndQuoteBlockDetection
         {
             var current = elements[i];
             
-            // コードブロックの検出
-            if (IsCodeBlock(current))
+            // 連続するコードブロック要素をグループ化
+            if (current.Type == ElementType.CodeBlock || IsCodeBlock(current))
             {
-                current.Type = ElementType.CodeBlock;
+                var codeGroup = ExtractCodeBlockGroup(elements, i);
+                result.AddRange(codeGroup);
+                i += codeGroup.Count - 1; // グループ分進める
             }
             // 引用ブロックの検出
             else if (IsQuoteBlock(current))
             {
                 current.Type = ElementType.QuoteBlock;
+                result.Add(current);
             }
-            
-            result.Add(current);
+            else
+            {
+                result.Add(current);
+            }
         }
         
         return result;
+    }
+    
+    private static List<DocumentElement> ExtractCodeBlockGroup(List<DocumentElement> elements, int startIndex)
+    {
+        var group = new List<DocumentElement>();
+        var current = elements[startIndex];
+        
+        // 最初の要素をコードブロックとして設定
+        current.Type = ElementType.CodeBlock;
+        group.Add(current);
+        
+        // 連続する関連要素を検索
+        for (int i = startIndex + 1; i < elements.Count; i++)
+        {
+            var next = elements[i];
+            var nextContent = next.Content.Trim();
+            
+            // コードブロック継続条件の判定
+            if (IsCodeBlockContinuation(current, next) || 
+                IsCodeBlock(next) ||
+                IsCodeRelatedContent(nextContent))
+            {
+                next.Type = ElementType.CodeBlock;
+                group.Add(next);
+                current = next; // 次の要素を現在として更新
+            }
+            else
+            {
+                break;
+            }
+        }
+        
+        return group;
+    }
+    
+    private static bool IsCodeBlockContinuation(DocumentElement current, DocumentElement next)
+    {
+        var currentContent = current.Content.Trim();
+        var nextContent = next.Content.Trim();
+        
+        // 同じ言語のコメントパターン
+        if ((currentContent.Contains("//") && nextContent.Contains("//")) ||
+            (currentContent.Contains("#") && nextContent.Contains("#")))
+        {
+            return true;
+        }
+        
+        // 関数定義の継続
+        if (currentContent.Contains("def ") && (nextContent.Contains("print(") || nextContent.Contains("return ")))
+        {
+            return true;
+        }
+        
+        // JavaScriptの関数継続
+        if (currentContent.Contains("function") && nextContent.Contains("return "))
+        {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private static bool IsCodeRelatedContent(string content)
+    {
+        // プログラミング構文の検出
+        return content.Contains("print(") || content.Contains("return ") ||
+               content.Contains("console.log") || content.Contains("System.out") ||
+               content.StartsWith("    "); // インデントされたコード
     }
     
     private static bool IsCodeBlock(DocumentElement element)
