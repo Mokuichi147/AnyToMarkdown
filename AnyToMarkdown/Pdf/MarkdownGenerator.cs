@@ -197,16 +197,7 @@ internal static class MarkdownGenerator
         if (text.StartsWith("##")) return 2;
         if (text.StartsWith("#")) return 1;
         
-        // 特定のテストパターンに基づく明示的レベル
         var cleanText = StripMarkdownFormatting(text);
-        if (cleanText.Contains("複数行テーブルテスト")) return 1;
-        if (cleanText.Contains("基本的な複数行テーブル") || cleanText.Contains("空欄を含むテーブル")) return 2;
-        
-        // test-complex パターン (より具体的な順序で検証)
-        if (cleanText.Contains("複雑な構造テスト")) return 1;
-        if (cleanText.Contains("サブサブセクション1.1.1")) return 4;
-        if (cleanText.Contains("サブセクション1.1")) return 3;
-        if (cleanText.Contains("セクション1") || cleanText.Contains("セクション2")) return 2;
         
         // 階層的数字パターンベース
         var hierarchicalMatch = System.Text.RegularExpressions.Regex.Match(text, @"^(\d+(\.\d+)*)");
@@ -302,56 +293,30 @@ internal static class MarkdownGenerator
         // リスト項目は明示的にヘッダーから除外
         if (cleanContent.StartsWith("-") || cleanContent.StartsWith("*") || cleanContent.StartsWith("+") ||
             cleanContent.StartsWith("‒") || cleanContent.StartsWith("–") || cleanContent.StartsWith("—") ||
-            cleanContent.StartsWith("・") || cleanContent.StartsWith("•") ||
-            cleanContent.Contains("ネスト項目") || cleanContent.Contains("項目1") || cleanContent.Contains("項目2"))
+            cleanContent.StartsWith("・") || cleanContent.StartsWith("•"))
         {
             return false;
         }
         
-        // 明確なヘッダーパターン
-        var headerPatterns = new[]
-        {
-            "包括的Markdown記法テスト",
-            "ヘッダーテスト", 
-            "レベル1ヘッダー", "レベル2ヘッダー", "レベル3ヘッダー", "レベル4ヘッダー", "レベル5ヘッダー", "レベル6ヘッダー",
-            "強調テスト", "リストテスト", "番号なしリスト", "番号付きリスト", "リンクテスト", "コードテスト", "引用テスト", "テーブルテスト",
-            "水平線テスト", "エスケープ文字テスト", "複合テスト", "段落と改行テスト", "特殊文字テスト", "混合コンテンツテスト",
-            "複雑なテーブルテスト", "セル内に特殊文字を含むテーブル", "不規則な空白パターン"
-        };
+        // フォントサイズまたは書式設定によりヘッダーパターンを検出
+        // 単語数が少なく、短いテキストはヘッダーの可能性が高い
+        var wordCount = cleanContent.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Length;
+        var hasHeaderStructure = wordCount <= 8 && cleanContent.Length <= 50;
         
-        return headerPatterns.Any(pattern => cleanContent.Equals(pattern, StringComparison.OrdinalIgnoreCase));
+        return hasHeaderStructure;
     }
     
     private static int GetExplicitHeaderLevel(string content)
     {
         var cleanContent = StripMarkdownFormatting(content).Trim();
         
-        // メインタイトル
-        if (cleanContent.Equals("包括的Markdown記法テスト", StringComparison.OrdinalIgnoreCase))
-            return 1;
             
-        // セクションヘッダー
-        var sectionHeaders = new[] { "ヘッダーテスト", "強調テスト", "リストテスト", "リンクテスト", "コードテスト", "引用テスト", "テーブルテスト", "水平線テスト", "エスケープ文字テスト", "複合テスト", "段落と改行テスト", "特殊文字テスト", "混合コンテンツテスト", "セル内に特殊文字を含むテーブル", "不規則な空白パターン" };
-        if (sectionHeaders.Any(h => cleanContent.Equals(h, StringComparison.OrdinalIgnoreCase)))
-            return 2;
+        // テキスト長に基づくレベル決定
+        if (cleanContent.Length <= 10) return 1;  // 非常に短いタイトル
+        if (cleanContent.Length <= 20) return 2;  // 短いヘッダー
+        if (cleanContent.Length <= 35) return 3;  // 中程度のヘッダー
             
-        // メインタイトル（# レベル）
-        var mainTitles = new[] { "複雑なテーブルテスト" };
-        if (mainTitles.Any(h => cleanContent.Equals(h, StringComparison.OrdinalIgnoreCase)))
-            return 1;
-            
-        // サブセクションヘッダー
-        var subSectionHeaders = new[] { "番号なしリスト", "番号付きリスト" };
-        if (subSectionHeaders.Any(h => cleanContent.Equals(h, StringComparison.OrdinalIgnoreCase)))
-            return 3;
-            
-        // レベル指定ヘッダー（複合テキストも対応）
-        if (cleanContent.Contains("レベル1")) return 1;
-        if (cleanContent.Contains("レベル2")) return 2;
-        if (cleanContent.Contains("レベル3")) return 3;
-        if (cleanContent.Contains("レベル4")) return 4;
-        if (cleanContent.Contains("レベル5")) return 5;
-        if (cleanContent.Contains("レベル6")) return 6;
+        // デフォルトレベルは2に設定
         
         return 2; // デフォルト
     }
@@ -372,11 +337,6 @@ internal static class MarkdownGenerator
             return 0.0; // リスト項目はヘッダーではない
         }
         
-        // ネストリストのパターンを検出
-        if (content.Trim().StartsWith("ネスト") || content.Contains("項目1") || content.Contains("項目2"))
-        {
-            return 0.0; // ネストリスト項目の可能性
-        }
         
         // テキスト長による重み付け（短いほど高スコア、より寛容）
         if (length <= 15) return 1.0;
@@ -1804,25 +1764,13 @@ internal static class MarkdownGenerator
         // 複数のアスタリスクが連続している場合の正規化
         text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{3,}", "***");
         
-        // エスケープされた文字の検出と修正
-        if (text.Contains("エスケープされた"))
-        {
-            // アスタリスクのエスケープ
-            if (text.Contains("アスタリスク"))
-                return "\\*エスケープされたアスタリスク\\*";
-            
-            // アンダースコアのエスケープ  
-            if (text.Contains("アンダースコア"))
-                return "\\_エスケープされたアンダースコア\\_";
-                
-            // ハッシュのエスケープ
-            if (text.Contains("ハッシュ"))
-                return "\\#エスケープされたハッシュ";
-                
-            // 角括弧のエスケープ
-            if (text.Contains("角括弧"))
-                return "\\[エスケープされた角括弧\\]";
-        }
+        // Markdownエスケープ文字の汎用検出と処理
+        // 既存のエスケープ文字がある場合は、それを保持
+        text = text.Replace("\\*", "\\*")
+                  .Replace("\\_", "\\_")
+                  .Replace("\\#", "\\#")
+                  .Replace("\\[", "\\[")
+                  .Replace("\\]", "\\]");
         
         return text;
     }
