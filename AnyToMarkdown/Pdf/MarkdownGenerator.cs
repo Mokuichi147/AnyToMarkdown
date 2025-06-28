@@ -45,59 +45,6 @@ internal static class MarkdownGenerator
         return PostProcessMarkdown(sb.ToString());
     }
 
-    private static List<DocumentElement> ConsolidateParagraphs(List<DocumentElement> elements)
-    {
-        var consolidated = new List<DocumentElement>();
-        
-        for (int i = 0; i < elements.Count; i++)
-        {
-            var current = elements[i];
-            
-            if (current.Type == ElementType.Paragraph)
-            {
-                var paragraphBuilder = new StringBuilder(current.Content);
-                var consolidatedWords = new List<Word>(current.Words);
-                
-                // より慎重な段落統合：条件を満たす場合のみ統合
-                int j = i + 1;
-                while (j < elements.Count && elements[j].Type == ElementType.Paragraph)
-                {
-                    var nextParagraph = elements[j];
-                    
-                    // 統合条件をチェック
-                    if (!ShouldConsolidateParagraphs(current, nextParagraph))
-                    {
-                        break;
-                    }
-                    
-                    paragraphBuilder.Append(" ").Append(nextParagraph.Content);
-                    consolidatedWords.AddRange(nextParagraph.Words);
-                    j++;
-                }
-                
-                // 統合された段落要素を作成
-                var consolidatedElement = new DocumentElement
-                {
-                    Type = ElementType.Paragraph,
-                    Content = paragraphBuilder.ToString(),
-                    FontSize = current.FontSize,
-                    LeftMargin = current.LeftMargin,
-                    IsIndented = current.IsIndented,
-                    Words = consolidatedWords
-                };
-                
-                consolidated.Add(consolidatedElement);
-                i = j - 1; // 統合した要素数分進める
-            }
-            else
-            {
-                consolidated.Add(current);
-            }
-        }
-        
-        return consolidated;
-    }
-    
     private static List<DocumentElement> ConsolidateParagraphsImproved(List<DocumentElement> elements)
     {
         var consolidated = new List<DocumentElement>();
@@ -206,79 +153,6 @@ internal static class MarkdownGenerator
             {
                 return false;
             }
-        }
-        
-        return true;
-    }
-    
-    private static bool ShouldConsolidateParagraphs(DocumentElement current, DocumentElement next)
-    {
-        // 書式設定が大きく異なる場合は統合しない
-        if (Math.Abs(current.FontSize - next.FontSize) > 1.0)
-        {
-            return false;
-        }
-        
-        // インデント状態が異なる場合は統合しない
-        if (current.IsIndented != next.IsIndented)
-        {
-            return false;
-        }
-        
-        // マージンが大きく異なる場合は統合しない
-        if (Math.Abs(current.LeftMargin - next.LeftMargin) > 10.0)
-        {
-            return false;
-        }
-        
-        // 書式設定マークを含む場合は慎重に判断
-        var currentText = current.Content.Trim();
-        var nextText = next.Content.Trim();
-        
-        // 文字数による分離：長い段落は統合しない
-        if (currentText.Length > 100 || nextText.Length > 100)
-        {
-            return false;
-        }
-        
-        // Markdownの特殊記法を含む場合は統合しない
-        if (ContainsMarkdownSyntax(currentText) || ContainsMarkdownSyntax(nextText))
-        {
-            return false;
-        }
-        
-        // 現在の段落が完結している（句点で終わる）場合は統合しない
-        if (currentText.EndsWith("。") || currentText.EndsWith(".") || currentText.EndsWith("!") || currentText.EndsWith("?"))
-        {
-            return false;
-        }
-        
-        // 座標ベースの統合判定：行の垂直距離が大きい場合は別々の段落として扱う
-        if (current.Words.Count > 0 && next.Words.Count > 0)
-        {
-            var currentBottom = current.Words.Min(w => w.BoundingBox.Bottom);
-            var nextTop = next.Words.Max(w => w.BoundingBox.Top);
-            var verticalGap = Math.Abs(currentBottom - nextTop);
-            
-            // 垂直ギャップが大きい場合は統合しない（段落境界の改善）
-            if (verticalGap > 12.0)
-            {
-                return false;
-            }
-        }
-        
-        // Markdown記法の構文要素は分離
-        if (currentText.Contains("**") || nextText.Contains("**") ||
-            currentText.Contains("```") || nextText.Contains("```"))
-        {
-            return false;
-        }
-        
-        // URL や特殊な書式を含む場合は統合しない
-        if (currentText.Contains("://") || nextText.Contains("://") ||
-            currentText.Contains("www.") || nextText.Contains("www."))
-        {
-            return false;
         }
         
         return true;
@@ -1473,56 +1347,6 @@ internal static class MarkdownGenerator
     private static ColumnInfo? AnalyzeColumnAlignment(List<List<WordGroup>> rowWordGroups, int columnIndex)
     {
         return AnalyzeColumnAlignmentEnhanced(rowWordGroups, columnIndex);
-    }
-    
-    private static ColumnAlignment DetermineAlignmentType(List<WordGroup> groups, double leftBoundary, double rightBoundary)
-    {
-        var columnWidth = rightBoundary - leftBoundary;
-        var tolerance = columnWidth * 0.1; // 10%の許容範囲
-        
-        // 左寄せ判定
-        var leftAlignedCount = groups.Count(g => Math.Abs(g.LeftPosition - leftBoundary) <= tolerance);
-        
-        // 右寄せ判定
-        var rightAlignedCount = groups.Count(g => Math.Abs(g.RightPosition - rightBoundary) <= tolerance);
-        
-        // 中央寄せ判定
-        var centerPosition = (leftBoundary + rightBoundary) / 2;
-        var centerAlignedCount = groups.Count(g => Math.Abs(g.CenterPosition - centerPosition) <= tolerance);
-        
-        var totalGroups = groups.Count;
-        var threshold = totalGroups * 0.5; // 50%以上で判定（より寛容）
-        
-        if (leftAlignedCount >= threshold) return ColumnAlignment.Left;
-        if (rightAlignedCount >= threshold) return ColumnAlignment.Right;
-        if (centerAlignedCount >= threshold) return ColumnAlignment.Center;
-        
-        return ColumnAlignment.Mixed;
-    }
-    
-    private static double CalculateAlignmentConsistency(List<WordGroup> groups, ColumnAlignment alignmentType, 
-        double leftBoundary, double rightBoundary)
-    {
-        if (groups.Count == 0) return 0.0;
-        
-        var consistentCount = 0;
-        var columnWidth = rightBoundary - leftBoundary;
-        var tolerance = columnWidth * 0.2; // 20%の許容範囲（より寛容）
-        
-        foreach (var group in groups)
-        {
-            var isConsistent = alignmentType switch
-            {
-                ColumnAlignment.Left => Math.Abs(group.LeftPosition - leftBoundary) <= tolerance,
-                ColumnAlignment.Right => Math.Abs(group.RightPosition - rightBoundary) <= tolerance,
-                ColumnAlignment.Center => Math.Abs(group.CenterPosition - (leftBoundary + rightBoundary) / 2) <= tolerance,
-                _ => false
-            };
-            
-            if (isConsistent) consistentCount++;
-        }
-        
-        return (double)consistentCount / groups.Count;
     }
     
     private static double ValidateMarkdownTableConsistency(List<ColumnInfo> columns)
