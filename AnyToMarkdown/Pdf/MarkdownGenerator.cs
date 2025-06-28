@@ -1508,6 +1508,12 @@ internal static class MarkdownGenerator
         
         try
         {
+            // 入力検証
+            if (tableRows == null || tableRows.Count > 1000) // 大量行数制限
+            {
+                return boundaries;
+            }
+            
             // 列配置パターン分析によるグループ化
             var columnAnalysis = AnalyzeColumnAlignments(tableRows);
             
@@ -3048,6 +3054,13 @@ internal static class MarkdownGenerator
     {
         if (string.IsNullOrWhiteSpace(text))
             return new List<string>();
+            
+        // 入力検証とサニタイゼーション
+        text = text.Trim();
+        if (text.Length > 10000) // 異常に長いテキストの処理制限
+        {
+            text = text.Substring(0, 10000);
+        }
         
         // パイプ文字がある場合は既存のMarkdown表記
         if (text.Contains("|"))
