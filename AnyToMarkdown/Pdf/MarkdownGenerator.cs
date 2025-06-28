@@ -122,8 +122,21 @@ internal static class MarkdownGenerator
         var currentText = current.Content.Trim();
         var nextText = next.Content.Trim();
         
+        // Markdownの特殊記法を含む場合は統合しない
+        if (ContainsMarkdownSyntax(currentText) || ContainsMarkdownSyntax(nextText))
+        {
+            return false;
+        }
+        
         // 現在の段落が完結している（句点で終わる）場合は統合しない
         if (currentText.EndsWith("。") || currentText.EndsWith("."))
+        {
+            return false;
+        }
+        
+        // URL や特殊な書式を含む場合は統合しない
+        if (currentText.StartsWith("http") || nextText.StartsWith("http") ||
+            currentText.Contains("://") || nextText.Contains("://"))
         {
             return false;
         }
@@ -135,6 +148,17 @@ internal static class MarkdownGenerator
         }
         
         return true;
+    }
+    
+    private static bool ContainsMarkdownSyntax(string text)
+    {
+        // Markdownの特殊記法を検出
+        return text.Contains("**") || text.Contains("__") || 
+               text.Contains("```") || text.Contains("`") ||
+               text.Contains("[") && text.Contains("](") ||
+               text.StartsWith("#") || text.StartsWith(">") ||
+               text.StartsWith("-") || text.StartsWith("*") || text.StartsWith("+") ||
+               text.Contains("---") || text.Contains("***") || text.Contains("___");
     }
 
     private static string ConvertElementToMarkdown(DocumentElement element, List<DocumentElement> allElements, int currentIndex, FontAnalysis fontAnalysis)
@@ -439,15 +463,20 @@ internal static class MarkdownGenerator
         if (text == "---" || text == "***" || text == "___")
             return text;
             
+        // より柔軟な水平線検出
+        var cleanText = System.Text.RegularExpressions.Regex.Replace(text, @"[^\-\*_]", "").Trim();
+        
         // 文字の種類に基づいて適切な水平線に変換
-        if (text.Contains("-"))
+        if (cleanText.Contains("-") && cleanText.Length >= 3)
             return "---";
-        else if (text.Contains("*"))
+        else if (cleanText.Contains("*") && cleanText.Length >= 3)
             return "***";
-        else if (text.Contains("_"))
+        else if (cleanText.Contains("_") && cleanText.Length >= 3)
             return "___";
-        else
+        else if (text.Length >= 3)
             return "---"; // デフォルト
+        else
+            return text; // 短い場合はそのまま
     }
 
     private static string ConvertTableRow(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
@@ -1826,10 +1855,24 @@ internal static class MarkdownGenerator
         
         var result = sb.ToString().Trim();
         
+        // リンク記法の復元
+        result = RestoreLinks(result);
+        
         // 従来の方法も適用
         result = RestoreFormatting(result);
         
         return result;
+    }
+    
+    private static string RestoreLinks(string text)
+    {
+        // URLパターンを簡単なリンク記法に変換
+        text = System.Text.RegularExpressions.Regex.Replace(text, 
+            @"\b(https?://[^\s]+)", 
+            "<$1>");
+            
+        // 既存のMarkdownリンク記法はそのまま保持
+        return text;
     }
     
     private static bool IsWordBold(Word word)
@@ -1976,10 +2019,17 @@ internal static class MarkdownGenerator
         {
             var content = line.Content.Trim();
             
-            // 既に > で始まっている場合はそのまま
+            // 複数レベルの引用を分離して処理
             if (content.StartsWith(">"))
             {
-                sb.AppendLine(content);
+                // 既存の引用記号をクリーンアップ
+                var cleanContent = content.TrimStart('>').Trim();
+                
+                // 追加の引用レベルを検出
+                var additionalLevels = content.TakeWhile(c => c == '>').Count() - 1;
+                var quotePrefix = new string('>', Math.Max(1, additionalLevels + 1)) + " ";
+                
+                sb.AppendLine(quotePrefix + cleanContent);
             }
             else
             {

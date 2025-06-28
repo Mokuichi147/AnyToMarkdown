@@ -195,10 +195,17 @@ internal class PdfStructureAnalyzer
         bool hasHeaderContent = IsHeaderLike(cleanText);
         bool isShortText = cleanText.Length <= 20; // 短いテキストはヘッダーの可能性が高い
         
-        // 段落として扱うべきパターンの除外
+        // 段落として扱うべきパターンの除外（汎用的判定）
         if (cleanText.EndsWith(":") && cleanText.Length > 5) return ElementType.Paragraph;
-        if (cleanText.Contains("水平線") || cleanText.Contains("エスケープ")) return ElementType.Paragraph;
-        if (cleanText.Contains("強調と斜体とコード") || cleanText.Contains("テストです")) return ElementType.Paragraph;
+        
+        // URL/リンクパターンは段落として扱う（汎用的判定）
+        if (cleanText.StartsWith("http://") || cleanText.StartsWith("https://") || 
+            cleanText.StartsWith("www."))
+            return ElementType.Paragraph;
+            
+        // Markdownリンク記法は段落として扱う
+        if (cleanText.StartsWith("[") && cleanText.Contains("]("))
+            return ElementType.Paragraph;
         
         // エスケープされた文字を含むテキストは段落として扱う
         if (cleanText.Contains("\\*") || cleanText.Contains("\\_") || cleanText.Contains("\\#") || cleanText.Contains("\\["))
