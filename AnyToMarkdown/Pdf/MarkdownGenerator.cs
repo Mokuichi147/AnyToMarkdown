@@ -604,8 +604,16 @@ internal static class MarkdownGenerator
             // 空のセルを除外してより正確なテーブルを作成
             if (cells.Count > 0 && cells.Any(c => !string.IsNullOrWhiteSpace(c)))
             {
-                // セル内の<br>を適切に処理
-                var processedCellRow = cells.Select(ProcessMultiLineCell).ToList();
+                // セル内の<br>を適切に処理し、空白セルをプレースホルダーで保持
+                var processedCellRow = cells.Select(cell => 
+                    string.IsNullOrWhiteSpace(cell) ? "" : ProcessMultiLineCell(cell)).ToList();
+                    
+                // 最小列数を維持（空セルも含めて）
+                while (processedCellRow.Count < 2)
+                {
+                    processedCellRow.Add("");
+                }
+                
                 allCells.Add(processedCellRow);
                 maxColumns = Math.Max(maxColumns, processedCellRow.Count);
             }
@@ -618,7 +626,7 @@ internal static class MarkdownGenerator
         var hasAnyData = allCells.Any(row => row.Any(cell => !string.IsNullOrWhiteSpace(cell)));
         if (!hasAnyData) return "";
 
-        // より堅牢な列数正規化
+        // より堅牢な列数正規化と一貫性強化
         if (allCells.Count > 0)
         {
             // 列数の統計的分析
@@ -640,8 +648,24 @@ internal static class MarkdownGenerator
                 targetColumnCount = Math.Max(mostFrequentColumnCount, secondMostFrequentCount);
             }
             
-            // 実際のデータに基づく列数を使用（強制的な最小列数は設定しない）
+            // 最小列数の保証（テーブルとして意味のある構造）
+            targetColumnCount = Math.Max(targetColumnCount, 2);
             maxColumns = targetColumnCount;
+            
+            // 全行を統一列数に正規化
+            for (int i = 0; i < allCells.Count; i++)
+            {
+                var row = allCells[i];
+                while (row.Count < maxColumns)
+                {
+                    row.Add("");
+                }
+                // 過剰な列は切り詰め
+                if (row.Count > maxColumns)
+                {
+                    allCells[i] = row.Take(maxColumns).ToList();
+                }
+            }
         }
 
         // 末尾の空列を除去

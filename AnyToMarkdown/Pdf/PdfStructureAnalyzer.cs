@@ -237,9 +237,9 @@ internal class PdfStructureAnalyzer
         var boldListPattern = System.Text.RegularExpressions.Regex.Match(text, @"^\*\*([‒–—\-\*\+•・])\*\*");
         if (boldListPattern.Success) return ElementType.ListItem;
         
-        // 数字付きリストの検出
-        var numberedListPattern = System.Text.RegularExpressions.Regex.Match(cleanText, @"^(\d{1,3})[\.\)]");
-        if (numberedListPattern.Success) return ElementType.ListItem;
+        // 数字付きリストの検出（金融データと区別）
+        var numberedListPattern = System.Text.RegularExpressions.Regex.Match(cleanText, @"^(\d{1,3})[\.\)]\s");
+        if (numberedListPattern.Success && !IsFinancialData(cleanText)) return ElementType.ListItem;
         
         // インラインコードまたは特殊構文の検出（汎用的）
         if (cleanText.Contains("`") || 
@@ -384,21 +384,35 @@ internal class PdfStructureAnalyzer
         
         // テーブルのような複数の短い単語が並んでいる場合
         var words = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length >= 3 && words.Length <= 6) // 3列以上でテーブルの可能性を高める
+        if (words.Length >= 2 && words.Length <= 8) // より広い範囲でテーブル検出
         {
-            // すべて短い単語（各8文字以下）で構成されている
-            if (words.All(w => w.Length <= 8))
+            // 混合データパターンの検出（数字、文字、記号の組み合わせ）
+            var hasMixedData = words.Any(w => w.Any(char.IsDigit)) && 
+                              words.Any(w => w.Any(char.IsLetter));
+                              
+            // 財務・統計データパターン
+            var hasDataPattern = words.Any(w => 
+                System.Text.RegularExpressions.Regex.IsMatch(w, @"\d+[,.]?\d*[%¥$]?"));
+            
+            // すべて短い単語（各10文字以下）で構成されている
+            if (words.All(w => w.Length <= 10))
             {
-                // ただし、ヘッダーらしいパターンは除外
+                // ヘッダーらしいパターンは除外（単一概念の表現）
                 var combinedLength = cleanText.Replace(" ", "").Length;
-                if (combinedLength > 20) // 長すぎる場合はテーブルの可能性
+                if (combinedLength > 15 || hasMixedData || hasDataPattern)
                 {
                     return true;
                 }
             }
             
             // 数字・アルファベットの組み合わせパターン（A1, B1, C1など）
-            if (words.Count(w => w.Length <= 3 && (w.Any(char.IsDigit) || w.All(char.IsUpper))) >= 2)
+            if (words.Count(w => w.Length <= 4 && (w.Any(char.IsDigit) || w.All(char.IsUpper))) >= 2)
+            {
+                return true;
+            }
+            
+            // 複数の短いセグメントがある場合（表の典型的パターン）
+            if (words.Length >= 3 && words.All(w => w.Length <= 6) && hasMixedData)
             {
                 return true;
             }
@@ -657,6 +671,12 @@ internal class PdfStructureAnalyzer
         
         // 明確なコードブロック開始・終了マーカー
         if (text.StartsWith("```") || text.EndsWith("```")) return true;
+        
+        // 学術論文の式や参考文献パターン
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\s*\(\d+\)|\[\d+\]|^[A-Z]\.|^Equation\s+\d+|^Fig\.|^Table\s+\d+"))
+        {
+            return true;
+        }
         
         // プログラミング言語のキーワードパターン
         var codeKeywords = new[] { "def ", "class ", "function ", "import ", "from ", "if __name__", "try:", "except:", "finally:", "with ", "async def", "await ", "return ", "yield ", "break", "continue", "pass", "raise", "assert", "del", "global", "nonlocal", "lambda", "for ", "while ", "if ", "elif ", "else:", "and ", "or ", "not ", "in ", "is ", "True", "False", "None" };
