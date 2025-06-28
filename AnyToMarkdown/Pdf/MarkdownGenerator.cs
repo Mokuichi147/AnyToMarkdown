@@ -435,7 +435,9 @@ internal static class MarkdownGenerator
         {
             var content = boldListMatch.Groups[2].Value.Trim();
             content = content.Replace("\0", "");
-            return $"{indentSpaces}- {content}";
+            // ネストされたアイテムには追加のインデントを適用
+            var nestedIndent = indentLevel > 0 ? "  " : "";
+            return $"{indentSpaces}{nestedIndent}- {content}";
         }
             
         // 日本語の箇条書き記号を変換
@@ -3037,10 +3039,41 @@ internal static class MarkdownGenerator
         if (words.Length <= 1)
             return words.ToList();
         
-        // 短い単語（8文字以下）が複数ある場合は各単語を個別のセルとして扱う
-        if (words.Length >= 2 && words.All(w => w.Length <= 8))
+        // 短い単語（6文字以下）が複数ある場合は各単語を個別のセルとして扱う
+        if (words.Length >= 2 && words.All(w => w.Length <= 6))
         {
             return words.ToList();
+        }
+        
+        // 明らかなテーブルパターン（A1B1 C1のような）を分離
+        if (words.Length >= 2)
+        {
+            var hasTablePattern = words.Any(w => 
+                w.Length <= 4 && 
+                (w.All(char.IsLetterOrDigit) || w.Any(char.IsDigit)) &&
+                !w.All(char.IsDigit));
+                
+            if (hasTablePattern)
+            {
+                var enhancedCells = new List<string>();
+                foreach (var word in words)
+                {
+                    // A1B1のような複合パターンを分割
+                    if (word.Length > 2 && word.Any(char.IsLetter) && word.Any(char.IsDigit))
+                    {
+                        var splitPattern = System.Text.RegularExpressions.Regex.Split(word, @"(?<=\d)(?=[A-Z])|(?<=[A-Z])(?=\d)");
+                        enhancedCells.AddRange(splitPattern.Where(s => !string.IsNullOrEmpty(s)));
+                    }
+                    else
+                    {
+                        enhancedCells.Add(word);
+                    }
+                }
+                if (enhancedCells.Count > words.Length)
+                {
+                    return enhancedCells;
+                }
+            }
         }
         
         // 長い単語が混在する場合は、適応的に分割
