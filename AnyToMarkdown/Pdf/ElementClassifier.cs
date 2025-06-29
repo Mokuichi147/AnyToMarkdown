@@ -26,7 +26,7 @@ internal static class ElementClassifier
         if (IsListItem(text, cleanText)) return ElementType.ListItem;
 
         // ヘッダーの詳細検出
-        if (IsHeader(cleanText, avgFontSize, fontAnalysis, leftPosition)) return ElementType.Header;
+        if (IsHeader(text, avgFontSize, fontAnalysis, leftPosition)) return ElementType.Header;
 
         // コードブロックの検出
         if (IsCodeBlock(text, cleanText)) return ElementType.CodeBlock;
@@ -55,14 +55,26 @@ internal static class ElementClassifier
             {
                 if (currentSegment.Length > 0)
                 {
-                    result.Append(FontAnalyzer.ApplyFormatting(currentSegment.ToString(), currentFormatting));
+                    result.Append(FontAnalyzer.ApplyFormatting(currentSegment.ToString().Trim(), currentFormatting));
                     currentSegment.Clear();
+                    
+                    // セグメント間にスペースを追加
+                    if (result.Length > 0)
+                    {
+                        result.Append(" ");
+                    }
                 }
             }
             
             currentFormatting = wordFormatting;
             // null文字と置換文字を除去してからテキストを追加
             var cleanText = word.Text?.Replace("\0", "").Replace("￿", "").Replace("\uFFFD", "") ?? "";
+            
+            // 単語間にスペースを追加（最初の単語以外）
+            if (currentSegment.Length > 0 && !string.IsNullOrEmpty(cleanText))
+            {
+                currentSegment.Append(" ");
+            }
             currentSegment.Append(cleanText);
         }
         
@@ -123,7 +135,13 @@ internal static class ElementClassifier
         }
         
         // 明らかに段落テキストでない場合の判定を厳しくする
-        if (text.Length > 60) return false;
+        if (text.Length > 50) return false;
+        
+        // 長い文章（20文字以上）で句読点が含まれている場合は段落とみなす
+        if (text.Length > 20 && (text.Contains("。") || text.Contains("、") || text.Contains(".") || text.Contains(",")))
+        {
+            return false;
+        }
         
         // 句読点で終わる文章は通常ヘッダーではない（段落テキストの典型）
         if (text.EndsWith(".") || text.EndsWith("。") || text.EndsWith("、") || text.EndsWith(",") ||
@@ -138,20 +156,24 @@ internal static class ElementClassifier
             text.StartsWith("これは") || text.StartsWith("それは") || text.StartsWith("この") || text.StartsWith("その") ||
             text.StartsWith("and ") || text.StartsWith("or ") || text.StartsWith("but ") || text.StartsWith("the ")) return false;
         
+        // 太字・斜体フォーマットを含むテキストは段落の可能性が高い
+        if (text.Contains("**") || text.Contains("*") && !text.StartsWith("*")) return false;
+        
         // フォントサイズベースの判定（段落テキストとの区別を明確に）
         var fontRatio = fontSize / fontAnalysis.BaseFontSize;
         
         // 明らかに大きなフォント（ヘッダーらしいフォントサイズ）
-        if (fontRatio >= 1.8) return true;
+        if (fontRatio >= 2.0) return true;
         
-        // ヘッダーっぽい特徴の組み合わせ
-        bool isShortText = text.Length <= 50;
+        // ヘッダーっぽい特徴の組み合わせ（より厳格に）
+        bool isShortText = text.Length <= 40;
         bool hasNoPunctuation = !text.EndsWith(".") && !text.EndsWith("。") && !text.Contains("、") && !text.Contains(",");
-        bool isLargeFont = fontRatio >= 1.3;
+        bool isLargeFont = fontRatio >= 1.5;
         bool isLeftAligned = leftPosition < 50;
+        bool noFormattingMarkers = !text.Contains("*") && !text.Contains("_");
         
-        // 複数の条件を満たす場合のみヘッダーとする
-        if (isShortText && hasNoPunctuation && isLargeFont && isLeftAligned) return true;
+        // より多くの条件を満たす場合のみヘッダーとする
+        if (isShortText && hasNoPunctuation && isLargeFont && isLeftAligned && noFormattingMarkers) return true;
         
         // 全て大文字の短いテキスト（タイトルの可能性）
         if (text.Length <= 30 && text.Length >= 3 && 
@@ -172,10 +194,24 @@ internal static class ElementClassifier
         if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+\.\s+")) return true;
         
         // 日本語および国際的な箇条書き記号（textとcleanTextの両方をチェック）
-        if (text.StartsWith("・") || text.StartsWith("•") || 
-            cleanText.StartsWith("・") || cleanText.StartsWith("•")) return true;
-        if (text.StartsWith("‒") || text.StartsWith("–") || text.StartsWith("—") ||
-            cleanText.StartsWith("‒") || cleanText.StartsWith("–") || cleanText.StartsWith("—")) return true;
+        string[] listMarkers = { "・", "•", "◦", "○", "●", "◯", "▪", "▫", "■", "□", "►", "⬥", "⬧", "⬢" };
+        foreach (var marker in listMarkers)
+        {
+            if (text.StartsWith(marker) || cleanText.StartsWith(marker)) return true;
+        }
+        
+        // ダッシュ系の記号（より包括的に）
+        string[] dashMarkers = { "‒", "–", "—", "-", "−", "⁃", "‐" };
+        foreach (var marker in dashMarkers)
+        {
+            if (text.StartsWith(marker) || cleanText.StartsWith(marker)) return true;
+        }
+        
+        // 特別なパターン：単一文字+スペース+テキスト（多くのPDFでよくある）
+        if (text.Length > 2 && char.IsPunctuation(text[0]) && char.IsWhiteSpace(text[1]))
+        {
+            return true;
+        }
         
         // 太字でフォーマットされたリスト記号も検出
         if (text.StartsWith("**‒**") || text.StartsWith("**–**") || text.StartsWith("**—**")) return true;
