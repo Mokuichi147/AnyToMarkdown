@@ -75,7 +75,7 @@ internal static class ElementDetector
                     return true;
 
                 // ヘッダー的なキーワードパターン
-                var headerKeywords = new[] { "目次", "概要", "まとめ", "結論", "はじめに", "終わりに", "参考文献" };
+                var headerKeywords = new[] { "目次", "概要", "まとめ", "結論", "はじめに", "終わりに", "参考文献", "テスト", "サンプル", "例" };
                 if (headerKeywords.Any(keyword => cleanText.Contains(keyword)))
                     return true;
 
@@ -227,8 +227,8 @@ internal static class ElementDetector
             return false;
         }
         
-        // 長い文章（15文字以上）は段落の可能性が高い
-        if (cleanText.Length > 15)
+        // 長い文章（25文字以上）は段落の可能性が高い
+        if (cleanText.Length > 25)
         {
             return false;
         }
@@ -246,16 +246,16 @@ internal static class ElementDetector
             return false;
         }
         
-        // 非常に大きなフォントのみヘッダーとする
-        if (fontSizeRatio >= 1.6)
+        // 大きなフォントでヘッダーとする（保守的に）
+        if (fontSizeRatio >= 1.35)
         {
-            if (cleanText.Length <= 50)
+            if (cleanText.Length <= 30)
                 return true;
         }
 
-        // 座標ベースの判定（より厳格に - フォントサイズも考慮）
+        // 座標ベースの判定（より保守的に）
         var leftPosition = words.Min(w => w.BoundingBox.Left);
-        if (leftPosition <= 50.0 && cleanText.Length <= 40 && fontSizeRatio >= 1.3)
+        if (leftPosition <= 40.0 && cleanText.Length <= 25 && fontSizeRatio >= 1.15)
         {
             // 典型的な段落開始パターンを除外
             if (cleanText.StartsWith("これは") || cleanText.StartsWith("それは") || 
@@ -274,9 +274,9 @@ internal static class ElementDetector
         if (hasBoldFont && cleanText.Length <= 100)
             return true;
 
-        // 単語数による判定
+        // 単語数による判定（保守的に）
         var wordCount = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Length;
-        if (wordCount <= 10 && fontSizeRatio >= 1.1)
+        if (wordCount <= 5 && fontSizeRatio >= 1.2)
             return true;
 
         return false;

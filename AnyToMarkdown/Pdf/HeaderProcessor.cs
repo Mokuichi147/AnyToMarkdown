@@ -38,12 +38,18 @@ internal static class HeaderProcessor
             return explicitLevel;
         }
         
-        // より精密なレベル決定（フォントサイズを主軸に、閾値を調整）
-        if (baseFontRatio >= 2.0 || combinedScore >= 0.95) return 1;   // 大見出し（より厳格に）
-        if (baseFontRatio >= 1.7 || combinedScore >= 0.85) return 2;  // 中見出し  
-        if (baseFontRatio >= 1.4 || combinedScore >= 0.70) return 3;  // 小見出し
-        if (baseFontRatio >= 1.2 || combinedScore >= 0.60) return 4;  // 細見出し
-        if (baseFontRatio >= 1.1 || combinedScore >= 0.50) return 5;  // 最小見出し
+        // より精密なレベル決定（相対的なフォントサイズに基づく）
+        
+        // 最大フォントサイズとの比較でレベルを決定
+        var maxFontSize = allSizes.Count > 0 ? allSizes[0] : element.FontSize;
+        var relativeRatio = element.FontSize / maxFontSize;
+        
+        // 相対的なサイズに基づいたレベル判定（より柔軟に）
+        if (relativeRatio >= 0.95 || baseFontRatio >= 1.6) return 1;   // 最大または非常に大きい
+        if (relativeRatio >= 0.85 || baseFontRatio >= 1.4) return 2;   // 大きい
+        if (relativeRatio >= 0.75 || baseFontRatio >= 1.25) return 3;  // 中程度
+        if (relativeRatio >= 0.65 || baseFontRatio >= 1.15) return 4;  // やや大きい
+        if (relativeRatio >= 0.55 || baseFontRatio >= 1.05) return 5;  // 少し大きい
         return 6;
     }
     
