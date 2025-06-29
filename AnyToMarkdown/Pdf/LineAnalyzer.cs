@@ -78,12 +78,20 @@ internal static class LineAnalyzer
         
         // 検出順序を慎重に調整（より具体的なパターンから順に）
         
-        // 1. ヘッダー構造の検出（フォントサイズと座標を重視）
-        bool hasHeaderStructure = ElementDetector.IsHeaderStructure(cleanText, words, maxFontSize, fontAnalysis);
+        // 1. ヘッダー構造の検出（より慎重に）
         bool hasHeaderContent = ElementDetector.IsHeaderLike(cleanText);
         
-        // フォントサイズが基準より大きく、ヘッダー構造を持つ場合
-        if (hasHeaderStructure && !ElementDetector.IsLikelyTableContent(cleanText, words))
+        // 段落的なパターンを除外
+        bool isParagraphLike = cleanText.EndsWith("。") || cleanText.EndsWith(".") || 
+                              cleanText.Contains("、") || cleanText.Contains(",") ||
+                              cleanText.Contains("**") || (cleanText.Contains("*") && !cleanText.StartsWith("*")) ||
+                              cleanText.StartsWith("これは") || cleanText.StartsWith("それは") ||
+                              cleanText.StartsWith("•") || cleanText.StartsWith("・") || cleanText.StartsWith("-");
+        
+        // 明らかに大きなフォントで段落的でない場合のみヘッダー
+        var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;
+        if (fontSizeRatio >= 1.6 && !isParagraphLike && 
+            !ElementDetector.IsLikelyTableContent(cleanText, words) && cleanText.Length <= 50)
         {
             return ElementType.Header;
         }
@@ -104,15 +112,29 @@ internal static class LineAnalyzer
         bool likelyTableContent = ElementDetector.IsLikelyTableContent(cleanText, words);
         if (likelyTableContent) return ElementType.TableRow;
         
-        // 7. フォントサイズによる二次ヘッダー検出
-        var fontSizeRatio = avgFontSize / fontAnalysis.BaseFontSize;
-        if (fontSizeRatio >= 1.05 && ElementDetector.IsHeaderLike(cleanText))
+        // 7. フォントサイズによる二次ヘッダー検出（より厳格に）
+        var secondaryFontRatio = avgFontSize / fontAnalysis.BaseFontSize;
+        
+        // フォーマット記号を含むテキストはヘッダーではない
+        if (cleanText.Contains("**") || (cleanText.Contains("*") && !cleanText.StartsWith("*")))
+        {
+            // 段落として分類
+        }
+        // リスト記号で始まるテキストはヘッダーではない
+        else if (cleanText.StartsWith("•") || cleanText.StartsWith("・") || cleanText.StartsWith("-"))
+        {
+            // 段落として分類
+        }
+        // 明らかに大きなフォントでヘッダーらしいパターンのみ
+        else if (secondaryFontRatio >= 1.5 && ElementDetector.IsHeaderLike(cleanText) && 
+                !cleanText.EndsWith("。") && !cleanText.EndsWith(".") && cleanText.Length <= 50)
         {
             return ElementType.Header;
         }
         
-        // 8. ヘッダーコンテンツパターンによる検出
-        if (hasHeaderContent && cleanText.Length <= 100)
+        // 8. ヘッダーコンテンツパターンによる検出（より厳格に）
+        if (hasHeaderContent && cleanText.Length <= 50 && secondaryFontRatio >= 1.3 &&
+            !cleanText.EndsWith("。") && !cleanText.EndsWith(".") && !cleanText.Contains("、"))
         {
             return ElementType.Header;
         }

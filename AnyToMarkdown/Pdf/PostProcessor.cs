@@ -197,13 +197,31 @@ internal static class PostProcessor
         if (fontRatio >= 1.15)
             return true;
 
-        // 短いテキストで左端に配置
-        if (current.Content.Trim().Length <= 80 && current.LeftMargin <= 50.0)
+        // ヘッダーらしい特徴を持つ短いテキストで左端に配置（より厳格に）
+        if (current.Content.Trim().Length <= 50 && current.LeftMargin <= 50.0)
         {
-            // 周囲の要素との関係をチェック
-            var hasFollowingContent = next?.Type == ElementType.Paragraph;
-            if (hasFollowingContent)
-                return true;
+            var content = current.Content.Trim();
+            
+            // 句読点で終わるテキストはヘッダーではない
+            if (content.EndsWith("。") || content.EndsWith("、") || content.EndsWith(".") || content.EndsWith(","))
+                return false;
+            
+            // フォーマット記号を含むテキストはヘッダーではない
+            if (content.Contains("**") || content.Contains("*") && !content.StartsWith("*"))
+                return false;
+                
+            // 典型的な段落開始パターンはヘッダーではない
+            if (content.StartsWith("これは") || content.StartsWith("それは") || content.StartsWith("この") || content.StartsWith("その"))
+                return false;
+            
+            // フォントサイズが明らかに大きい場合のみヘッダーとする
+            var currentFontRatio = current.FontSize / fontAnalysis.BaseFontSize;
+            if (currentFontRatio >= 1.4)
+            {
+                var hasFollowingContent = next?.Type == ElementType.Paragraph;
+                if (hasFollowingContent)
+                    return true;
+            }
         }
 
         // ヘッダー的なパターン

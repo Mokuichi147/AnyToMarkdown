@@ -215,20 +215,45 @@ internal static class ElementDetector
 
         var cleanText = text.Trim();
 
-        // フォントサイズベースの判定
+        // フォントサイズベースの判定（より厳格に）
         var fontSizeRatio = fontSize / fontAnalysis.BaseFontSize;
-        if (fontSizeRatio >= 1.2)
+        
+        // 明らかに段落的なテキストパターンを除外
+        if (cleanText.EndsWith("。") || cleanText.EndsWith("です。") || cleanText.EndsWith("ます。") ||
+            cleanText.EndsWith(".") || cleanText.Contains("、") || cleanText.Contains(","))
         {
-            // フォントが大きく、短いテキスト
+            return false;
+        }
+        
+        // フォーマット記号を含むテキストは段落の可能性が高い
+        if (cleanText.Contains("**") || (cleanText.Contains("*") && !cleanText.StartsWith("*")))
+        {
+            return false;
+        }
+        
+        // リスト記号で始まるテキストはヘッダーではない
+        if (cleanText.StartsWith("•") || cleanText.StartsWith("・") || cleanText.StartsWith("-") ||
+            cleanText.StartsWith("◦") || cleanText.StartsWith("○"))
+        {
+            return false;
+        }
+        
+        // 非常に大きなフォントのみヘッダーとする
+        if (fontSizeRatio >= 1.6)
+        {
             if (cleanText.Length <= 50)
                 return true;
         }
 
-        // 座標ベースの判定（左端に近い）
+        // 座標ベースの判定（より厳格に - フォントサイズも考慮）
         var leftPosition = words.Min(w => w.BoundingBox.Left);
-        if (leftPosition <= 50.0 && cleanText.Length <= 80)
+        if (leftPosition <= 50.0 && cleanText.Length <= 40 && fontSizeRatio >= 1.3)
         {
-            // 左端にあり、適度な長さ
+            // 典型的な段落開始パターンを除外
+            if (cleanText.StartsWith("これは") || cleanText.StartsWith("それは") || 
+                cleanText.StartsWith("この") || cleanText.StartsWith("その"))
+                return false;
+                
             return true;
         }
 
