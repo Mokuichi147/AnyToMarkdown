@@ -16,8 +16,8 @@ internal static class PostProcessor
             var previous = i > 0 ? result[i - 1] : null;
             var next = i < result.Count - 1 ? result[i + 1] : null;
             
-            // 段落の継続性チェック
-            if (current.Type == ElementType.Paragraph && 
+            // 段落の継続性チェック（一時的に無効化 - 段落を分離したまま保持）
+            /*if (current.Type == ElementType.Paragraph && 
                 previous?.Type == ElementType.Paragraph &&
                 ShouldMergeParagraphs(previous, current))
             {
@@ -27,11 +27,11 @@ internal static class PostProcessor
                 result.RemoveAt(i);
                 i--; // インデックス調整
                 continue;
-            }
+            }*/
             
-            // ヘッダー分類の改善
+            // ヘッダー分類の改善（より慎重に - 段落の誤分類を防ぐ）
             if (current.Type == ElementType.Paragraph && 
-                CouldBeHeader(current, previous, next, fontAnalysis))
+                IsDefinitelyHeader(current, previous, next, fontAnalysis))
             {
                 current.Type = ElementType.Header;
             }
@@ -63,10 +63,17 @@ internal static class PostProcessor
         {
             var element = result[i];
             
-            // ヘッダー候補の再評価
+            // ヘッダー候補の再評価（非常に慎重に）
             if (element.Type == ElementType.Paragraph)
             {
-                if (ElementDetector.IsHeaderStructure(element.Content, element.Words, element.FontSize, fontAnalysis))
+                // 段落的なパターンを含むテキストは絶対にヘッダーにしない
+                var content = element.Content?.Trim() ?? "";
+                bool isParagraphPattern = content.EndsWith("。") || content.EndsWith("です。") || 
+                                        content.Contains("、") || content.Contains("**") ||
+                                        content.StartsWith("これは") || content.StartsWith("この");
+                
+                if (!isParagraphPattern && 
+                    ElementDetector.IsHeaderStructure(element.Content, element.Words, element.FontSize, fontAnalysis))
                 {
                     element.Type = ElementType.Header;
                 }
@@ -183,6 +190,43 @@ internal static class PostProcessor
             !prevContent.EndsWith("!") && !prevContent.EndsWith("！") &&
             !prevContent.EndsWith("?") && !prevContent.EndsWith("？"))
             return true;
+
+        return false;
+    }
+
+    private static bool IsDefinitelyHeader(DocumentElement current, DocumentElement? previous, DocumentElement? next, FontAnalysis fontAnalysis)
+    {
+        if (current == null || string.IsNullOrWhiteSpace(current.Content))
+            return false;
+
+        var content = current.Content.Trim();
+        
+        // 明確に段落的なパターンは絶対にヘッダーではない
+        if (content.EndsWith("。") || content.EndsWith("です。") || content.EndsWith("ます。") ||
+            content.EndsWith(".") || content.Contains("、") || content.Contains(",") ||
+            content.Contains("**") || (content.Contains("*") && !content.StartsWith("*")) ||
+            content.StartsWith("これは") || content.StartsWith("それは") || 
+            content.StartsWith("この") || content.StartsWith("その") ||
+            content.StartsWith("•") || content.StartsWith("・") || content.StartsWith("-"))
+        {
+            return false;
+        }
+
+        // 非常に大きなフォントサイズのみ（2.0倍以上）
+        var fontRatio = current.FontSize / fontAnalysis.BaseFontSize;
+        if (fontRatio >= 2.0 && content.Length <= 30)
+        {
+            // 強いヘッダーパターンも確認
+            if (ElementDetector.IsStrongHeaderPattern(content))
+                return true;
+        }
+
+        // 全て大文字で短いタイトル的なテキスト
+        if (content.Length <= 20 && content.Length >= 3 && 
+            content.All(c => char.IsUpper(c) || char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsDigit(c)))
+        {
+            return true;
+        }
 
         return false;
     }

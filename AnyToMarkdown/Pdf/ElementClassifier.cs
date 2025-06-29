@@ -55,14 +55,13 @@ internal static class ElementClassifier
             {
                 if (currentSegment.Length > 0)
                 {
-                    result.Append(FontAnalyzer.ApplyFormatting(currentSegment.ToString().Trim(), currentFormatting));
-                    currentSegment.Clear();
-                    
-                    // セグメント間にスペースを追加
+                    // セグメント間にスペースを追加（結果が空でない場合）
                     if (result.Length > 0)
                     {
                         result.Append(" ");
                     }
+                    result.Append(FontAnalyzer.ApplyFormatting(currentSegment.ToString().Trim(), currentFormatting));
+                    currentSegment.Clear();
                 }
             }
             

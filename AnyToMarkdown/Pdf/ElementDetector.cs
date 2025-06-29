@@ -218,9 +218,17 @@ internal static class ElementDetector
         // フォントサイズベースの判定（より厳格に）
         var fontSizeRatio = fontSize / fontAnalysis.BaseFontSize;
         
-        // 明らかに段落的なテキストパターンを除外
+        // 明らかに段落的なテキストパターンを除外（より包括的に）
         if (cleanText.EndsWith("。") || cleanText.EndsWith("です。") || cleanText.EndsWith("ます。") ||
-            cleanText.EndsWith(".") || cleanText.Contains("、") || cleanText.Contains(","))
+            cleanText.EndsWith(".") || cleanText.Contains("、") || cleanText.Contains(",") ||
+            cleanText.StartsWith("これは") || cleanText.StartsWith("それは") || 
+            cleanText.StartsWith("この") || cleanText.StartsWith("その"))
+        {
+            return false;
+        }
+        
+        // 長い文章（15文字以上）は段落の可能性が高い
+        if (cleanText.Length > 15)
         {
             return false;
         }
