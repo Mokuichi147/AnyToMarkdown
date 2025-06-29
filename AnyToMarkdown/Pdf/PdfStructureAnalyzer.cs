@@ -239,7 +239,7 @@ internal class PdfStructureAnalyzer
         
         // 数字付きリストの検出（金融データと区別）
         var numberedListPattern = System.Text.RegularExpressions.Regex.Match(cleanText, @"^(\d{1,3})[\.\)]\s");
-        if (numberedListPattern.Success && !IsFinancialData(cleanText)) return ElementType.ListItem;
+        if (numberedListPattern.Success) return ElementType.ListItem;
         
         // インラインコードまたは特殊構文の検出（汎用的）
         if (cleanText.Contains("`") || 
