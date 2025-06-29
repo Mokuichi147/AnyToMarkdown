@@ -42,6 +42,18 @@ internal static class ElementClassifier
 
     private static string CombineWordsWithFormatting(List<Word> wordGroup)
     {
+        // シンプルなテキスト結合（フォーマット処理を一時的に簡素化）
+        var simpleText = string.Join(" ", wordGroup.Select(w => 
+            w.Text?.Replace("\0", "").Replace("￿", "").Replace("\uFFFD", "") ?? ""));
+        
+        // 基本的なクリーンアップのみ
+        simpleText = System.Text.RegularExpressions.Regex.Replace(simpleText, @"\s+", " ").Trim();
+        
+        return simpleText;
+    }
+    
+    private static string CombineWordsWithFormattingOriginal(List<Word> wordGroup)
+    {
         var result = new System.Text.StringBuilder();
         FontFormatting? currentFormatting = null;
         var currentSegment = new System.Text.StringBuilder();

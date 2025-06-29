@@ -13,8 +13,8 @@ internal static class LineAnalyzer
 
         var mergedWords = PdfWordProcessor.MergeWordsInLine(line, horizontalTolerance);
         
-        // フォント検出機能付きのテキスト生成（完全な実装）
-        var formattedText = BuildFormattedText(mergedWords);
+        // シンプルなテキスト生成（フォーマット処理を一時的に簡素化）
+        var formattedText = BuildFormattedTextSimple(mergedWords);
 
         if (string.IsNullOrWhiteSpace(formattedText))
             return new DocumentElement { Type = ElementType.Empty, Content = "" };

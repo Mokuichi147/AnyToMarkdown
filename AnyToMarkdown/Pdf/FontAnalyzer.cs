@@ -90,21 +90,16 @@ internal static class FontAnalyzer
                 formatting.IsItalic = true;
             }
             
-            // 追加の斜体パターン検出
-            if (fontName.Contains("-i") || fontName.Contains("_i") || fontName.EndsWith("i") ||
-                fontName.Contains("-it") || fontName.Contains("_it") || fontName.EndsWith("it"))
+            // 追加の斜体パターン検出（より厳格に）
+            if (fontName.Contains("-italic") || fontName.Contains("_italic") || 
+                fontName.Contains("-oblique") || fontName.Contains("-slant"))
             {
                 formatting.IsItalic = true;
             }
             
-            // フォント名に基づく追加判定 - より幅広い検出
-            if (fontName.Contains("-italic") || fontName.Contains("_italic") || 
-                fontName.EndsWith("-i") || fontName.EndsWith("_i") ||
-                fontName.Contains("-oblique") || fontName.Contains("-slant") ||
-                fontName.Contains("italic") || fontName.Contains("oblique") ||
-                fontName.Contains("italicmt") || fontName.Contains("-it") || 
-                fontName.EndsWith("it") || fontName.EndsWith("-i.ttf") ||
-                fontName.Contains("minion") && fontName.Contains("it"))
+            // 明確な斜体パターンのみ
+            if (fontName.EndsWith("-italic") || fontName.EndsWith("_italic") ||
+                fontName.EndsWith("-oblique") || fontName.Contains("italicmt"))
             {
                 formatting.IsItalic = true;
             }

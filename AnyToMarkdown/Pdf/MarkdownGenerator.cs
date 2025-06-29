@@ -149,8 +149,21 @@ internal static class MarkdownGenerator
             return false;
         }
         
-        // 段落の統合を無効にする（より安全な分離）
-        return false;
+        // 段落の統合を慎重に有効化（改善された条件）
+        
+        // フォント分析の差が大きい場合は統合しない
+        if (Math.Abs(current.FontSize - next.FontSize) > 2.0)
+        {
+            return false;
+        }
+        
+        // 短い独立した文は統合しない
+        if (currentText.Length <= 25 || nextText.Length <= 25)
+        {
+            return false;
+        }
+        
+        return true;
         
         // 垂直距離による判定
         if (current.Words.Count > 0 && next.Words.Count > 0)
