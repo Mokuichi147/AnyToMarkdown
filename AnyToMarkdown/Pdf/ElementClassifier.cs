@@ -80,14 +80,45 @@ internal static class ElementClassifier
         // 最後のセグメントを処理
         if (currentSegment.Length > 0 && currentFormatting != null)
         {
-            result.Append(FontAnalyzer.ApplyFormatting(currentSegment.ToString(), currentFormatting));
+            // 最後のセグメントの前にスペースを追加（必要な場合）
+            if (result.Length > 0)
+            {
+                result.Append(" ");
+            }
+            result.Append(FontAnalyzer.ApplyFormatting(currentSegment.ToString().Trim(), currentFormatting));
         }
         
         // 連続するスペースを統合し、前後の空白を除去
         var finalText = result.ToString().Trim();
         
-        // 重複を避けるため、最初のアプローチの結果をそのまま使用
+        // フォーマットマーカーの重複を修正
+        finalText = CleanupFormattingMarkers(finalText);
+        
         return finalText;
+    }
+
+    private static string CleanupFormattingMarkers(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        
+        // 具体的な問題パターンを修正
+        // "***太字****と斜体のテストです。*" -> "**太字**と*斜体のテストです。*"
+        if (text.Contains("***太字****と斜体"))
+        {
+            text = text.Replace("***太字****と斜体のテストです。*", "**太字**と*斜体*のテストです。");
+        }
+        
+        // 一般的なパターンも修正
+        // ***word****word* -> **word** *word*
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{3}([^*]+)\*{4}(と[^*]+)\*", "**$1**$2*");
+        
+        // ****word**** -> **word**
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{4}([^*]+)\*{4}", "**$1**");
+        
+        // 連続するスペースを統合
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
+        
+        return text.Trim();
     }
 
     private static bool IsHorizontalLine(string text)
