@@ -1,0 +1,375 @@
+using System.Linq;
+using System.Text;
+using UglyToad.PdfPig.Content;
+
+namespace AnyToMarkdown.Pdf;
+
+internal static class TableProcessor
+{
+    public static string ConvertTableRow(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
+    {
+        // 連続するテーブル行を検出
+        var consecutiveTableRows = new List<DocumentElement> { element };
+        
+        // 現在の行から続くテーブル行を収集
+        for (int i = currentIndex + 1; i < allElements.Count; i++)
+        {
+            if (allElements[i].Type == ElementType.TableRow)
+            {
+                consecutiveTableRows.Add(allElements[i]);
+            }
+            else if (allElements[i].Type == ElementType.Empty)
+            {
+                continue; // 空行は無視して続行
+            }
+            else
+            {
+                break; // テーブル行以外の要素が出現したら終了
+            }
+        }
+        
+        // 複数のテーブル行がある場合、Markdownテーブルを生成
+        if (consecutiveTableRows.Count > 1)
+        {
+            return GenerateMarkdownTable(consecutiveTableRows);
+        }
+        
+        // 単一行の場合は通常の行として処理
+        return element.Content;
+    }
+
+    public static string GenerateMarkdownTable(List<DocumentElement> tableRows)
+    {
+        if (tableRows.Count == 0) return "";
+        
+        var tableBuilder = new StringBuilder();
+        var allCells = new List<List<string>>();
+        
+        // 各行のセルを解析
+        foreach (var row in tableRows)
+        {
+            var cells = ParseTableCells(row);
+            if (cells.Count > 0)
+            {
+                allCells.Add(cells);
+            }
+        }
+        
+        if (allCells.Count == 0) return "";
+        
+        // 最大列数を決定
+        var maxColumns = allCells.Max(row => row.Count);
+        
+        // 各行の列数を統一
+        foreach (var row in allCells)
+        {
+            while (row.Count < maxColumns)
+            {
+                row.Add("");
+            }
+        }
+        
+        // ヘッダー行
+        tableBuilder.Append("| ");
+        for (int i = 0; i < maxColumns; i++)
+        {
+            var cellContent = allCells[0][i].Trim();
+            
+            // セル内の<br>を適切に処理し、空白セルをプレースホルダーで保持
+            if (string.IsNullOrWhiteSpace(cellContent))
+            {
+                cellContent = " "; // 空白セルのプレースホルダー
+            }
+            else
+            {
+                // セル内容のクリーンアップ
+                cellContent = CleanTableCell(cellContent);
+            }
+            
+            tableBuilder.Append($"{cellContent} |");
+            if (i < maxColumns - 1) tableBuilder.Append(" ");
+        }
+        tableBuilder.AppendLine();
+        
+        // 区切り行
+        tableBuilder.Append("|");
+        for (int i = 0; i < maxColumns; i++)
+        {
+            tableBuilder.Append("-----|");
+        }
+        tableBuilder.AppendLine();
+        
+        // データ行
+        for (int rowIndex = 1; rowIndex < allCells.Count; rowIndex++)
+        {
+            tableBuilder.Append("| ");
+            for (int colIndex = 0; colIndex < maxColumns; colIndex++)
+            {
+                var cellContent = allCells[rowIndex][colIndex].Trim();
+                
+                if (string.IsNullOrWhiteSpace(cellContent))
+                {
+                    cellContent = " "; // 空白セルのプレースホルダー
+                }
+                else
+                {
+                    cellContent = CleanTableCell(cellContent);
+                }
+                
+                tableBuilder.Append($"{cellContent} |");
+                if (colIndex < maxColumns - 1) tableBuilder.Append(" ");
+            }
+            tableBuilder.AppendLine();
+        }
+        
+        return tableBuilder.ToString();
+    }
+
+    private static string CleanTableCell(string cellContent)
+    {
+        if (string.IsNullOrEmpty(cellContent)) return "";
+        
+        // テーブルセルでの<br>を確実に除去（強制・全パターン対応）
+        cellContent = cellContent.Replace("<br>", "").Replace("<br/>", "").Replace("<BR>", "").Replace("<BR/>", "").Replace("<br />", "");
+        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br\s*/?>\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        // パイプ文字をエスケープ
+        cellContent = cellContent.Replace("|", "\\|");
+        
+        // 改行を適切に処理
+        cellContent = cellContent.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+        
+        // 余分なスペースを除去
+        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"\s+", " ");
+        
+        return cellContent.Trim();
+    }
+
+    public static List<string> ParseTableCells(DocumentElement row)
+    {
+        var cells = new List<string>();
+        
+        // パイプで区切られたMarkdownテーブル形式の場合
+        if (row.Content.Contains("|"))
+        {
+            var pipeSeparated = row.Content.Split('|')
+                .Where(cell => !string.IsNullOrWhiteSpace(cell))
+                .Select(cell => cell.Trim())
+                .ToList();
+            
+            if (pipeSeparated.Count > 1)
+            {
+                return pipeSeparated;
+            }
+        }
+        
+        // 座標ベースのセル分割
+        if (row.Words?.Count > 0)
+        {
+            return ParseTableCellsWithBoundaries(row);
+        }
+        
+        // フォールバック：テキストベースの分割
+        return SplitTextIntoTableCells(row.Content);
+    }
+
+    private static List<string> ParseTableCellsWithBoundaries(DocumentElement row)
+    {
+        var cells = new List<string>();
+        if (row.Words == null || row.Words.Count == 0) return cells;
+        
+        // 単語を左から右にソート
+        var sortedWords = row.Words.OrderBy(w => w.BoundingBox.Left).ToList();
+        
+        // 列境界を分析
+        var boundaries = AnalyzeTableColumnBoundaries(sortedWords);
+        
+        // 境界に基づいてセルを生成
+        foreach (var boundary in boundaries)
+        {
+            var wordsInCell = sortedWords.Where(w => 
+                w.BoundingBox.Left >= boundary.Left && 
+                w.BoundingBox.Right <= boundary.Right).ToList();
+            
+            var cellText = BuildCellTextWithSpacing(wordsInCell);
+            cells.Add(cellText);
+        }
+        
+        return cells.Where(cell => !string.IsNullOrWhiteSpace(cell)).ToList();
+    }
+
+    private static string BuildCellTextWithSpacing(List<Word> words)
+    {
+        if (words.Count == 0) return "";
+        if (words.Count == 1) return words[0].Text?.Trim() ?? "";
+        
+        var result = new StringBuilder();
+        for (int i = 0; i < words.Count; i++)
+        {
+            var word = words[i];
+            var text = word.Text?.Trim() ?? "";
+            
+            if (string.IsNullOrEmpty(text)) continue;
+            
+            if (result.Length > 0)
+            {
+                // 単語間の距離を計算してスペースを挿入するかどうか決定
+                var previousWord = words[i - 1];
+                var gap = word.BoundingBox.Left - previousWord.BoundingBox.Right;
+                var avgFontSize = (word.BoundingBox.Height + previousWord.BoundingBox.Height) / 2;
+                
+                // フォントサイズの30%以上の間隔がある場合はスペースを挿入
+                if (gap > avgFontSize * 0.3)
+                {
+                    result.Append(" ");
+                }
+            }
+            
+            result.Append(text);
+        }
+        
+        return result.ToString().Trim();
+    }
+
+    private static List<ColumnBoundary> AnalyzeTableColumnBoundaries(List<Word> words)
+    {
+        var boundaries = new List<ColumnBoundary>();
+        if (words.Count == 0) return boundaries;
+        
+        // 単語の位置をクラスタリング
+        var positions = words.Select(w => w.BoundingBox.Left).Distinct().OrderBy(p => p).ToList();
+        var clusters = ClusterPositions(positions);
+        
+        // 各クラスタから境界を生成
+        foreach (var cluster in clusters)
+        {
+            var left = cluster.Min();
+            var right = words.Where(w => Math.Abs(w.BoundingBox.Left - left) < 10)
+                            .Max(w => w.BoundingBox.Right);
+            
+            boundaries.Add(new ColumnBoundary { Left = left, Right = right });
+        }
+        
+        return boundaries;
+    }
+
+    private static List<List<double>> ClusterPositions(List<double> positions)
+    {
+        var clusters = new List<List<double>>();
+        if (positions.Count == 0) return clusters;
+        
+        // 重複を除去してソート
+        var uniquePositions = positions.Distinct().OrderBy(p => p).ToList();
+        
+        const double threshold = 20.0; // クラスタリング閾値
+        var currentCluster = new List<double> { uniquePositions[0] };
+        
+        for (int i = 1; i < uniquePositions.Count; i++)
+        {
+            if (uniquePositions[i] - uniquePositions[i - 1] <= threshold)
+            {
+                currentCluster.Add(uniquePositions[i]);
+            }
+            else
+            {
+                clusters.Add(currentCluster);
+                currentCluster = new List<double> { uniquePositions[i] };
+            }
+        }
+        
+        clusters.Add(currentCluster);
+        return clusters;
+    }
+
+    private static List<string> SplitTextIntoTableCells(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return [];
+        
+        // タブ区切りを優先
+        if (content.Contains('\t'))
+        {
+            return content.Split('\t')
+                .Where(cell => !string.IsNullOrWhiteSpace(cell))
+                .Select(cell => cell.Trim())
+                .ToList();
+        }
+        
+        // 複数スペースによる区切り
+        var multiSpaceSplit = System.Text.RegularExpressions.Regex.Split(content, @"\s{2,}")
+            .Where(cell => !string.IsNullOrWhiteSpace(cell))
+            .Select(cell => cell.Trim())
+            .ToList();
+        
+        if (multiSpaceSplit.Count > 1)
+        {
+            return multiSpaceSplit;
+        }
+        
+        // 単一スペースによる区切り（最後の手段）
+        return content.Split(' ')
+            .Where(cell => !string.IsNullOrWhiteSpace(cell))
+            .Select(cell => cell.Trim())
+            .ToList();
+    }
+
+    public static string[] MergeDisconnectedTableCells(string[] lines)
+    {
+        var result = new List<string>();
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            
+            // テーブル行の場合、次の行が分離されたセル内容かチェック
+            if (line.StartsWith("|") && line.EndsWith("|") && i + 1 < lines.Length)
+            {
+                var nextLine = lines[i + 1].Trim();
+                
+                // 次の行がテーブル行でもヘッダーでもない短いテキストの場合、セル内容として結合
+                if (!nextLine.StartsWith("|") && !nextLine.StartsWith("#") && 
+                    !nextLine.Contains("---") && nextLine.Length > 0 && nextLine.Length <= 15)
+                {
+                    // セル内容を前の行に結合 - より智能的に適切なセルを選択
+                    var cells = line.Split('|').ToList();
+                    if (cells.Count >= 3)  // 最低限のテーブル構造
+                    {
+                        // 各セルの長さを分析して最も短いセルに追加（通常は不完全なセル）
+                        var contentCells = cells.Skip(1).Take(cells.Count - 2).ToList();  // 最初と最後の空要素を除く
+                        if (contentCells.Count > 0)
+                        {
+                            // 最も短いセルまたは最後のセルに追加
+                            var shortestCellIndex = 0;
+                            var shortestLength = int.MaxValue;
+                            
+                            for (int k = 0; k < contentCells.Count; k++)
+                            {
+                                var cellLength = contentCells[k].Trim().Length;
+                                if (cellLength < shortestLength)
+                                {
+                                    shortestLength = cellLength;
+                                    shortestCellIndex = k;
+                                }
+                            }
+                            
+                            // インデックスを調整（最初の空要素分）
+                            var targetCellIndex = shortestCellIndex + 1;
+                            cells[targetCellIndex] = cells[targetCellIndex].Trim() + nextLine;
+                            line = string.Join("|", cells);
+                            i++; // 次の行をスキップ
+                        }
+                    }
+                }
+            }
+            
+            result.Add(line);
+        }
+        
+        return result.ToArray();
+    }
+}
+
+public class ColumnBoundary
+{
+    public double Left { get; set; }
+    public double Right { get; set; }
+}

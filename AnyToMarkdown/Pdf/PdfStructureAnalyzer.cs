@@ -17,111 +17,39 @@ internal class PdfStructureAnalyzer
         var documentStructure = new DocumentStructure();
 
         // より詳細なフォント分析
-        var fontAnalysis = AnalyzeFontDistribution(words);
+        var fontAnalysis = FontAnalyzer.AnalyzeFontDistribution(words);
         
         // 図形情報を抽出してテーブルの境界を検出
-        var graphicsInfo = ExtractGraphicsInfo(page);
+        var graphicsInfo = GraphicsProcessor.ExtractGraphicsInfo(page);
         
         var elements = new List<DocumentElement>();
         for (int i = 0; i < lines.Count; i++)
         {
-            var element = AnalyzeLine(lines[i], fontAnalysis, horizontalTolerance);
+            var element = LineAnalyzer.AnalyzeLine(lines[i], fontAnalysis, horizontalTolerance);
             elements.Add(element);
         }
 
         // 後処理：コンテキスト情報を活用した要素分類の改善（テーブル検出前）
-        elements = PostProcessElementClassification(elements, fontAnalysis);
+        elements = PostProcessor.PostProcessElementClassification(elements, fontAnalysis);
         
         // ヘッダーの座標ベース検出とレベル修正
-        elements = PostProcessHeaderDetectionWithCoordinates(elements, fontAnalysis);
+        elements = PostProcessor.PostProcessHeaderDetectionWithCoordinates(elements, fontAnalysis);
         
         // 後処理：コードブロックと引用ブロックの検出
-        elements = CodeAndQuoteBlockDetection.PostProcessCodeAndQuoteBlocks(elements);
+        elements = PostProcessor.PostProcessCodeAndQuoteBlocks(elements);
         
         // 後処理：テーブルヘッダーの統合処理
-        elements = TableHeaderIntegration.PostProcessTableHeaderIntegration(elements);
+        elements = PostProcessor.PostProcessTableHeaderIntegration(elements);
         
         // 後処理：図形情報と連続する行の構造パターンを分析してテーブルを検出
-        elements = PostProcessTableDetection(elements, graphicsInfo);
+        elements = PostProcessor.PostProcessTableDetection(elements, graphicsInfo);
         
         documentStructure.Elements.AddRange(elements);
         documentStructure.FontAnalysis = fontAnalysis;
         return documentStructure;
     }
 
-    private static FontAnalysis AnalyzeFontDistribution(List<Word> words)
-    {
-        if (words.Count == 0)
-        {
-            return new FontAnalysis
-            {
-                BaseFontSize = 12.0,
-                LargeFontThreshold = 15.6,
-                SmallFontThreshold = 9.6,
-                DominantFont = "unknown",
-                AllFontSizes = [12.0]
-            };
-        }
-
-        var fontSizes = words.GroupBy(w => Math.Round(w.BoundingBox.Height, 1))
-                            .OrderByDescending(g => g.Count())
-                            .ToList();
-
-        var fontNames = words.GroupBy(w => w.FontName ?? "unknown")
-                            .OrderByDescending(g => g.Count())
-                            .ToList();
-
-        // 最も頻度の高いフォントサイズをベースとして使用
-        double baseFontSize = fontSizes.First().Key;
-        string dominantFont = fontNames.First().Key;
-
-        // 段落レベルのテキストを探してより正確なベースサイズを決定
-        var paragraphWords = words.Where(w => 
-        {
-            var text = w.Text?.Trim();
-            return !string.IsNullOrEmpty(text) && 
-                   text!.Length > 3 && 
-                   !text.All(char.IsDigit) &&
-                   !(text.StartsWith("#") || text.StartsWith("-") || text.StartsWith("*"));
-        }).ToList();
-
-        if (paragraphWords.Count > 0)
-        {
-            var paragraphFontSizes = paragraphWords.GroupBy(w => Math.Round(w.BoundingBox.Height, 1))
-                                                   .OrderByDescending(g => g.Count())
-                                                   .ToList();
-            
-            // より堅牢なベースフォントサイズ決定: 平均値と最頻値を組み合わせ
-            var mostFrequent = paragraphFontSizes.First().Key;
-            var avgSize = paragraphWords.Average(w => w.BoundingBox.Height);
-            
-            // 極端な値を避けるため、平均値と最頻値の中間を採用
-            baseFontSize = (mostFrequent + avgSize) / 2.0;
-        }
-
-        // より精密な閾値設定（統計的分布を考慮）
-        var sizeVariance = CalculateFontSizeVariance(words, baseFontSize);
-        double largeFontThreshold = baseFontSize * (1.2 + Math.Min(sizeVariance * 0.1, 0.3));
-        double smallFontThreshold = baseFontSize * (0.8 - Math.Min(sizeVariance * 0.1, 0.2));
-
-        return new FontAnalysis
-        {
-            BaseFontSize = baseFontSize,
-            LargeFontThreshold = largeFontThreshold,
-            SmallFontThreshold = smallFontThreshold,
-            DominantFont = dominantFont,
-            AllFontSizes = [.. fontSizes.Select(g => g.Key)]
-        };
-    }
     
-    private static double CalculateFontSizeVariance(List<Word> words, double baseFontSize)
-    {
-        if (words.Count == 0) return 0.0;
-        
-        var sizes = words.Select(w => w.BoundingBox.Height).ToList();
-        var variance = sizes.Average(size => Math.Pow(size - baseFontSize, 2));
-        return Math.Sqrt(variance) / baseFontSize; // 正規化された標準偏差
-    }
 
     private static DocumentElement AnalyzeLine(List<Word> line, FontAnalysis fontAnalysis, double horizontalTolerance)
     {
@@ -2673,14 +2601,14 @@ internal class PdfStructureAnalyzer
             {
                 var level = DetermineHeaderLevelFromCoordinate(avgCoordinate, coordinateGroups, fontSizeGroups);
                 
-                analysis.CoordinateLevels[avgCoordinate] = new HeaderLevelInfo
+                analysis.CoordinateLevels.Add(new HeaderLevelInfo
                 {
                     Level = level,
                     Coordinate = avgCoordinate,
                     Count = headersAtCoordinate.Count,
                     AvgFontSize = headersAtCoordinate.Average(h => h.FontSize),
                     Consistency = CalculateCoordinateConsistency(headersAtCoordinate)
-                };
+                });
             }
         }
         
@@ -2778,7 +2706,7 @@ internal class PdfStructureAnalyzer
         var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;
         
         // 座標パターンに一致するかチェック
-        foreach (var levelInfo in analysis.CoordinateLevels.Values)
+        foreach (var levelInfo in analysis.CoordinateLevels)
         {
             if (Math.Abs(leftPosition - levelInfo.Coordinate) <= 12.0) // 12ポイント許容範囲
             {
@@ -3217,369 +3145,3 @@ internal class PdfStructureAnalyzer
 }
 
 
-public class GraphicsInfo
-{
-    public List<LineSegment> HorizontalLines { get; set; } = new List<LineSegment>();
-    public List<LineSegment> VerticalLines { get; set; } = new List<LineSegment>();
-    public List<UglyToad.PdfPig.Core.PdfRectangle> Rectangles { get; set; } = new List<UglyToad.PdfPig.Core.PdfRectangle>();
-    public List<TablePattern> TablePatterns { get; set; } = new List<TablePattern>();
-}
-
-public class LineSegment
-{
-    public UglyToad.PdfPig.Core.PdfPoint From { get; set; }
-    public UglyToad.PdfPig.Core.PdfPoint To { get; set; }
-    public double Thickness { get; set; } = 1.0;
-    public LineType Type { get; set; } = LineType.Unknown;
-}
-
-public class TablePattern
-{
-    public TableBorderType BorderType { get; set; }
-    public UglyToad.PdfPig.Core.PdfRectangle BoundingArea { get; set; }
-    public List<LineSegment> BorderLines { get; set; } = new List<LineSegment>();
-    public List<LineSegment> InternalLines { get; set; } = new List<LineSegment>();
-    public double Confidence { get; set; }
-    public int EstimatedColumns { get; set; }
-    public int EstimatedRows { get; set; }
-}
-
-public enum LineType
-{
-    Unknown,
-    TableBorder,
-    TableInternal,
-    HeaderSeparator,
-    RowSeparator,
-    ColumnSeparator
-}
-
-public enum TableBorderType
-{
-    None,
-    FullBorder,      // 全体を囲う
-    TopBottomOnly,   // 上下のみ
-    HeaderSeparator, // ヘッダー下のみ
-    GridLines,       // グリッド線
-    PartialBorder    // 部分的な境界
-}
-
-public class FontFormatting
-{
-    public bool IsBold { get; set; }
-    public bool IsItalic { get; set; }
-}
-
-public class FontAnalysis
-{
-    public double BaseFontSize { get; set; }
-    public double LargeFontThreshold { get; set; }
-    public double SmallFontThreshold { get; set; }
-    public string DominantFont { get; set; } = "";
-    public List<double> AllFontSizes { get; set; } = [];
-}
-
-public class DocumentStructure
-{
-    public List<DocumentElement> Elements { get; set; } = [];
-    public FontAnalysis FontAnalysis { get; set; } = new FontAnalysis();
-}
-
-public class DocumentElement
-{
-    public ElementType Type { get; set; }
-    public string Content { get; set; } = "";
-    public double FontSize { get; set; }
-    public double LeftMargin { get; set; }
-    public bool IsIndented { get; set; }
-    public List<Word> Words { get; set; } = [];
-}
-
-public class TableRegion
-{
-    public List<DocumentElement> Elements { get; set; } = new List<DocumentElement>();
-    public TablePattern? Pattern { get; set; }
-    public UglyToad.PdfPig.Core.PdfRectangle BoundingArea { get; set; }
-    
-    public bool Contains(DocumentElement element)
-    {
-        return Elements.Contains(element);
-    }
-}
-
-// ヘッダー座標分析用のクラス
-public class HeaderCoordinateAnalysis
-{
-    public Dictionary<double, HeaderLevelInfo> CoordinateLevels { get; set; } = new Dictionary<double, HeaderLevelInfo>();
-}
-
-public class HeaderLevelInfo
-{
-    public int Level { get; set; }
-    public double Coordinate { get; set; }
-    public int Count { get; set; }
-    public double AvgFontSize { get; set; }
-    public double Consistency { get; set; }
-}
-
-public class HeaderCandidate
-{
-    public DocumentElement Element { get; set; } = null!;
-    public double LeftPosition { get; set; }
-    public double FontSize { get; set; }
-    public double FontSizeRatio { get; set; }
-    public bool IsCurrentlyHeader { get; set; }
-}
-
-internal static class TableHeaderIntegration
-{
-    public static List<DocumentElement> PostProcessTableHeaderIntegration(List<DocumentElement> elements)
-    {
-        var result = new List<DocumentElement>();
-        
-        for (int i = 0; i < elements.Count; i++)
-        {
-            var current = elements[i];
-            
-            // テーブル行の直前にある段落をチェック
-            if (current.Type == ElementType.TableRow && i > 0)
-            {
-                var previous = elements[i - 1];
-                
-                // 前の要素がテーブルヘッダーになり得るかチェック
-                if (previous.Type == ElementType.Paragraph && CouldBeTableHeader(previous, current))
-                {
-                    // 前の段落をテーブル行に変換
-                    if (result.Count > 0 && result.Last() == previous)
-                    {
-                        result.RemoveAt(result.Count - 1);
-                    }
-                    
-                    // ヘッダー行として追加
-                    var headerRow = ConvertToTableRow(previous);
-                    result.Add(headerRow);
-                }
-            }
-            
-            result.Add(current);
-        }
-        
-        return result;
-    }
-    
-    private static bool CouldBeTableHeader(DocumentElement paragraph, DocumentElement tableRow)
-    {
-        var paragraphText = paragraph.Content.Trim();
-        
-        // 短いテキストで、複数の列要素を含む可能性
-        if (paragraphText.Length > 50) return false;
-        
-        // スペースで区切られた短い単語（列名）の特徴
-        var words = paragraphText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length < 2 || words.Length > 10) return false;
-        
-        // 各単語が短い（列名の特徴）
-        if (words.Any(w => w.Length > 10)) return false;
-        
-        // 句読点が含まれていない（列名の特徴）
-        if (paragraphText.Contains("。") || paragraphText.Contains(",") || paragraphText.Contains("、")) return false;
-        
-        // テーブル行と垂直位置が近い（上下の位置関係をチェック）
-        var paragraphY = paragraph.Words?.Any() == true ? paragraph.Words.Min(w => w.BoundingBox.Bottom) : 0;
-        var tableRowY = tableRow.Words?.Any() == true ? tableRow.Words.Min(w => w.BoundingBox.Bottom) : 0;
-        var verticalGap = Math.Abs(tableRowY - paragraphY);
-        if (verticalGap > 30.0) return false;
-        
-        // 水平位置の配置が類似している
-        var horizontalAlignmentSimilar = Math.Abs(tableRow.LeftMargin - paragraph.LeftMargin) < 20.0;
-        
-        return horizontalAlignmentSimilar;
-    }
-    
-    private static DocumentElement ConvertToTableRow(DocumentElement paragraph)
-    {
-        return new DocumentElement
-        {
-            Type = ElementType.TableRow,
-            Content = paragraph.Content,
-            FontSize = paragraph.FontSize,
-            LeftMargin = paragraph.LeftMargin,
-            Words = paragraph.Words,
-            IsIndented = paragraph.IsIndented
-        };
-    }
-}
-
-internal static class CodeAndQuoteBlockDetection
-{
-    public static List<DocumentElement> PostProcessCodeAndQuoteBlocks(List<DocumentElement> elements)
-    {
-        var result = new List<DocumentElement>();
-        
-        for (int i = 0; i < elements.Count; i++)
-        {
-            var current = elements[i];
-            
-            // 連続するコードブロック要素をグループ化
-            if (current.Type == ElementType.CodeBlock || IsCodeBlock(current))
-            {
-                var codeGroup = ExtractCodeBlockGroup(elements, i);
-                result.AddRange(codeGroup);
-                i += codeGroup.Count - 1; // グループ分進める
-            }
-            // 引用ブロックの検出
-            else if (IsQuoteBlock(current))
-            {
-                current.Type = ElementType.QuoteBlock;
-                result.Add(current);
-            }
-            else
-            {
-                result.Add(current);
-            }
-        }
-        
-        return result;
-    }
-    
-    private static List<DocumentElement> ExtractCodeBlockGroup(List<DocumentElement> elements, int startIndex)
-    {
-        var group = new List<DocumentElement>();
-        var current = elements[startIndex];
-        
-        // 最初の要素をコードブロックとして設定
-        current.Type = ElementType.CodeBlock;
-        group.Add(current);
-        
-        // 連続する関連要素を検索
-        for (int i = startIndex + 1; i < elements.Count; i++)
-        {
-            var next = elements[i];
-            var nextContent = next.Content.Trim();
-            
-            // コードブロック継続条件の判定
-            if (IsCodeBlockContinuation(current, next) || 
-                IsCodeBlock(next) ||
-                IsCodeRelatedContent(nextContent))
-            {
-                next.Type = ElementType.CodeBlock;
-                group.Add(next);
-                current = next; // 次の要素を現在として更新
-            }
-            else
-            {
-                break;
-            }
-        }
-        
-        return group;
-    }
-    
-    private static bool IsCodeBlockContinuation(DocumentElement current, DocumentElement next)
-    {
-        var currentContent = current.Content.Trim();
-        var nextContent = next.Content.Trim();
-        
-        // 同じ言語のコメントパターン
-        if ((currentContent.Contains("//") && nextContent.Contains("//")) ||
-            (currentContent.Contains("#") && nextContent.Contains("#")))
-        {
-            return true;
-        }
-        
-        // 関数定義の継続
-        if (currentContent.Contains("def ") && (nextContent.Contains("print(") || nextContent.Contains("return ")))
-        {
-            return true;
-        }
-        
-        // JavaScriptの関数継続
-        if (currentContent.Contains("function") && nextContent.Contains("return "))
-        {
-            return true;
-        }
-        
-        return false;
-    }
-    
-    private static bool IsCodeRelatedContent(string content)
-    {
-        // プログラミング構文の検出
-        return content.Contains("print(") || content.Contains("return ") ||
-               content.Contains("console.log") || content.Contains("System.out") ||
-               content.StartsWith("    "); // インデントされたコード
-    }
-    
-    private static bool IsCodeBlock(DocumentElement element)
-    {
-        var content = element.Content.Trim();
-        
-        // コードの典型的なパターン
-        if (content.Contains("public") && content.Contains("class"))
-            return true;
-            
-        if (content.Contains("{") && content.Contains("}"))
-            return true;
-            
-        if (content.Contains("void") && content.Contains("(") && content.Contains(")"))
-            return true;
-            
-        // プログラミング言語のキーワード
-        var codeKeywords = new[] { "function", "var", "const", "let", "return", "if", "else", "for", "while" };
-        if (codeKeywords.Any(keyword => content.Contains(keyword)))
-            return true;
-        
-        return false;
-    }
-    
-    private static bool IsMarkdownHorizontalLine(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        
-        var trimmed = text.Trim();
-        
-        // 3文字以上の同じ文字の連続（---、***、___）
-        if (trimmed.Length >= 3)
-        {
-            if (trimmed.All(c => c == '-') || 
-                trimmed.All(c => c == '*') || 
-                trimmed.All(c => c == '_'))
-            {
-                return true;
-            }
-        }
-        
-        return false;
-    }
-    
-    private static bool IsQuoteBlock(DocumentElement element)
-    {
-        var content = element.Content.Trim();
-        
-        // 引用文の典型的なパターン
-        if (content.StartsWith(">"))
-            return true;
-            
-        // 引用らしいコンテキスト（短い文で、引用符がある）
-        if (content.Contains("「") && content.Contains("」"))
-            return true;
-            
-        if (content.Contains("\"") && content.Length < 100)
-            return true;
-        
-        return false;
-    }
-    
-}
-
-public enum ElementType
-{
-    Empty,
-    Header,
-    Paragraph,
-    ListItem,
-    TableRow,
-    CodeBlock,
-    QuoteBlock,
-    HorizontalLine
-}

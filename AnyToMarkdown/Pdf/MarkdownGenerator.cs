@@ -42,7 +42,7 @@ internal static class MarkdownGenerator
             }
         }
 
-        return PostProcessMarkdown(sb.ToString());
+        return TextPostProcessor.PostProcessMarkdown(sb.ToString());
     }
 
     private static List<DocumentElement> ConsolidateParagraphsImproved(List<DocumentElement> elements)
@@ -102,19 +102,12 @@ internal static class MarkdownGenerator
     
     private static string DetermineParagraphSeparator(string currentText, string nextText)
     {
-        // 日本語テキストの場合はスペースなし、英語はスペース追加
-        if (IsJapaneseText(currentText) && IsJapaneseText(nextText))
-        {
-            return "";
-        }
-        return " ";
+        return TextFormatter.DetermineParagraphSeparator(currentText, nextText);
     }
     
     private static bool IsJapaneseText(string text)
     {
-        return text.Any(c => (c >= 0x3040 && c <= 0x309F) || // ひらがな
-                           (c >= 0x30A0 && c <= 0x30FF) || // カタカナ
-                           (c >= 0x4E00 && c <= 0x9FAF));  // 漢字
+        return TextFormatter.IsJapaneseText(text);
     }
     
     private static bool ShouldConsolidateParagraphsImproved(DocumentElement current, DocumentElement next)
@@ -173,12 +166,12 @@ internal static class MarkdownGenerator
     {
         return element.Type switch
         {
-            ElementType.Header => ConvertHeader(element, fontAnalysis),
-            ElementType.ListItem => ConvertListItem(element),
-            ElementType.TableRow => ConvertTableRow(element, allElements, currentIndex),
-            ElementType.CodeBlock => ConvertCodeBlock(element, allElements, currentIndex),
-            ElementType.QuoteBlock => ConvertQuoteBlock(element, allElements, currentIndex),
-            ElementType.HorizontalLine => ConvertHorizontalLine(element),
+            ElementType.Header => HeaderProcessor.ConvertHeader(element, fontAnalysis),
+            ElementType.ListItem => BlockProcessor.ConvertListItem(element),
+            ElementType.TableRow => TableProcessor.ConvertTableRow(element, allElements, currentIndex),
+            ElementType.CodeBlock => BlockProcessor.ConvertCodeBlock(element, allElements, currentIndex),
+            ElementType.QuoteBlock => BlockProcessor.ConvertQuoteBlock(element, allElements, currentIndex),
+            ElementType.HorizontalLine => BlockProcessor.ConvertHorizontalLine(element),
             ElementType.Paragraph => ConvertParagraph(element, fontAnalysis),
             _ => element.Content
         };
