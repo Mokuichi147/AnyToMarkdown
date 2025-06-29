@@ -194,6 +194,9 @@ internal static class MarkdownGenerator
         // ヘッダーのフォーマットを除去してクリーンなテキストを取得
         var cleanText = StripMarkdownFormatting(text);
         
+        // 空のヘッダーは無視
+        if (string.IsNullOrWhiteSpace(cleanText)) return "";
+        
         var level = DetermineHeaderLevel(element, fontAnalysis);
         var prefix = new string('#', level);
         
@@ -202,16 +205,27 @@ internal static class MarkdownGenerator
     
     private static string StripMarkdownFormatting(string text)
     {
-        // 太字フォーマットを除去（複数回実行して入れ子や複数パターンを処理）
-        while (text.Contains("**") || text.Contains("*"))
-        {
-            var before = text;
-            text = System.Text.RegularExpressions.Regex.Replace(text, @"\*{1,3}([^*]*)\*{1,3}", "$1");
-            if (before == text) break; // 変化がなければ終了
-        }
+        if (string.IsNullOrWhiteSpace(text)) return "";
         
-        // 斜体フォーマットを除去  
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"_([^_]+)_", "$1");
+        // より安全なフォーマット除去（対称的なマークを正確に除去）
+        // ***太字斜体*** パターンを最初に処理
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^\*\*\*(.+?)\*\*\*$", "$1");
+        
+        // **太字** パターンを処理
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^\*\*(.+?)\*\*$", "$1");
+        
+        // *斜体* パターンを処理
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^\*(.+?)\*$", "$1");
+        
+        // __太字__ パターンを処理
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^__(.+?)__$", "$1");
+        
+        // _斜体_ パターンを処理
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"^_(.+?)_$", "$1");
+        
+        // 中央の * や ** も除去（ただし安全に）
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*(.+?)\*\*", "$1");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"(?<!\*)\*([^*]+?)\*(?!\*)", "$1");
         
         // 余分なスペースを統合
         text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
@@ -1593,12 +1607,13 @@ internal static class MarkdownGenerator
             cellGroups[cellIndex].Add(word);
         }
         
-        // 各セルグループからテキストを生成
+        // 各セルグループからテキストを生成（改善版：適切なスペース処理）
         foreach (var group in cellGroups)
         {
             if (group.Count > 0)
             {
-                var cellText = string.Join("", group.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text)).Trim();
+                var orderedWords = group.OrderBy(w => w.BoundingBox.Left).ToList();
+                var cellText = BuildCellTextWithSpacing(orderedWords);
                 cells.Add(cellText);
             }
             else
@@ -1614,6 +1629,39 @@ internal static class MarkdownGenerator
         }
         
         return cells;
+    }
+    
+    private static string BuildCellTextWithSpacing(List<UglyToad.PdfPig.Content.Word> words)
+    {
+        if (words.Count == 0) return "";
+        if (words.Count == 1) return words[0].Text?.Trim() ?? "";
+        
+        var result = new StringBuilder();
+        for (int i = 0; i < words.Count; i++)
+        {
+            var word = words[i];
+            var text = word.Text?.Trim() ?? "";
+            
+            if (string.IsNullOrEmpty(text)) continue;
+            
+            if (result.Length > 0)
+            {
+                // 単語間の距離を計算してスペースを挿入するかどうか決定
+                var previousWord = words[i - 1];
+                var gap = word.BoundingBox.Left - previousWord.BoundingBox.Right;
+                var avgFontSize = (word.BoundingBox.Height + previousWord.BoundingBox.Height) / 2;
+                
+                // フォントサイズの30%以上の間隔がある場合はスペースを挿入
+                if (gap > avgFontSize * 0.3)
+                {
+                    result.Append(" ");
+                }
+            }
+            
+            result.Append(text);
+        }
+        
+        return result.ToString().Trim();
     }
     
     private static List<List<double>> ClusterPositions(List<double> positions)
@@ -2372,6 +2420,9 @@ internal static class MarkdownGenerator
         // 禁止文字（null文字など）を除去
         markdown = RemoveForbiddenCharacters(markdown);
         
+        // HTMLタグの除去（最優先で処理）
+        markdown = RemoveHtmlTags(markdown);
+        
         // エスケープ文字の復元
         markdown = RestoreEscapeCharacters(markdown);
         
@@ -2479,6 +2530,34 @@ internal static class MarkdownGenerator
         }
         
         return cleanedText.ToString();
+    }
+    
+    private static string RemoveHtmlTags(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        
+        // 各種HTMLタグの除去（大文字小文字を問わず）
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"<br\s*/?>\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"<BR\s*/?>\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"<p\s*/?>\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"</p>\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"<div\s*/?>\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"</div>\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        // 一般的なHTMLタグの除去
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"<[^>]+>", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        // HTMLエンティティのデコード
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"&nbsp;", " ");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"&amp;", "&");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"&lt;", "<");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"&gt;", ">");
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"&quot;", "\"");
+        
+        // 余分な空白を統合
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
+        
+        return text.Trim();
     }
 
     private static string[] MergeDisconnectedTableCells(string[] lines)

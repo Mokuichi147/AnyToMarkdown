@@ -623,12 +623,117 @@ internal class PdfStructureAnalyzer
         var significantThreshold = Math.Max(q3, fontBasedThreshold);
         var significantGaps = gaps.Count(g => g > significantThreshold);
         
-        // 複数の有意なギャップがある場合（列分離の証拠）
+        // より緩和された条件：有意なギャップまたは規則的配置
         if (significantGaps >= 1) return true;
         
-        // または明らかに大きなギャップが存在する場合
-        if (maxGap > avgFontSize * 2) return true;
+        // より敏感なギャップ検出（閾値を下げる）
+        if (maxGap > avgFontSize * 1.0) return true;
+        
+        // 単語間の配置が規則的な場合（テーブル列の証拠）
+        if (HasRegularSpacing(words))
+        {
+            return true;
+        }
+        
+        // 単語数が3つ以上で、平均的なギャップが大きい場合（閾値を下げる）
+        if (words.Count >= 3 && avgGap > avgFontSize * 0.6)
+        {
+            return true;
+        }
+        
+        // 数値データが複数含まれている場合の特別処理
+        if (HasNumericTablePattern(words))
+        {
+            return true;
+        }
+        
+        // 2つの単語で大きなギャップがある場合（2列テーブルの可能性）
+        if (words.Count == 2 && maxGap > avgFontSize * 0.8)
+        {
+            return true;
+        }
+        
+        // テキストパターンによる追加検出
+        if (HasTableLikeTextPattern(text))
+        {
+            return true;
+        }
 
+        return false;
+    }
+    
+    private static bool HasRegularSpacing(List<Word> words)
+    {
+        if (words.Count < 3) return false;
+        
+        var positions = words.Select(w => w.BoundingBox.Left).OrderBy(x => x).ToList();
+        var intervals = new List<double>();
+        
+        for (int i = 1; i < positions.Count; i++)
+        {
+            intervals.Add(positions[i] - positions[i-1]);
+        }
+        
+        if (intervals.Count < 2) return false;
+        
+        // 間隔の標準偏差を計算
+        var avgInterval = intervals.Average();
+        var variance = intervals.Sum(x => Math.Pow(x - avgInterval, 2)) / intervals.Count;
+        var stdDev = Math.Sqrt(variance);
+        
+        // 標準偏差が平均の30%以下なら規則的な配置とみなす
+        return stdDev / avgInterval <= 0.3;
+    }
+    
+    private static bool HasNumericTablePattern(List<Word> words)
+    {
+        if (words.Count < 2) return false;
+        
+        var numericWords = words.Count(w => 
+        {
+            var text = w.Text?.Trim() ?? "";
+            return !string.IsNullOrEmpty(text) && 
+                   (text.All(char.IsDigit) || 
+                    System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+[\.,]\d+$") ||
+                    System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+%?$"));
+        });
+        
+        // 数値データが50%以上含まれている場合はテーブルの可能性が高い
+        return (double)numericWords / words.Count >= 0.5;
+    }
+    
+    private static bool HasTableLikeTextPattern(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        // 既にMarkdownテーブル形式の場合
+        if (text.Contains("|")) return true;
+        
+        // コロンで区切られたキー値ペア（例：名前: 田中太郎）
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[^\s:]+\s*:\s*[^\s:]+"))
+        {
+            return true;
+        }
+        
+        // タブ文字で区切られている場合
+        if (text.Contains("\t") && text.Split('\t').Length >= 2)
+        {
+            return true;
+        }
+        
+        // 複数のスペースで区切られている場合（例：田中太郎    30    エンジニア）
+        var parts = System.Text.RegularExpressions.Regex.Split(text, @"\s{2,}").Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+        if (parts.Length >= 2)
+        {
+            return true;
+        }
+        
+        // 日本語の文脈で、名前・年齢・職業などのパターン
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, @"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+\s+\d+\s+[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+"))
+        {
+            return true;
+        }
+        
         return false;
     }
     
@@ -643,26 +748,42 @@ internal class PdfStructureAnalyzer
         if (cleanText.StartsWith("-") || cleanText.StartsWith("*") || cleanText.StartsWith("+")) return false;
         if (cleanText.Contains("://") || cleanText.Contains("[") && cleanText.Contains("](")) return false;
         
-        // フォントサイズベースの判定
-        bool hasLargeFont = fontSize > fontAnalysis.LargeFontThreshold;
+        // フォントサイズベースの判定を強化
+        var fontSizeRatio = fontSize / fontAnalysis.BaseFontSize;
+        bool hasLargeFont = fontSizeRatio > 1.2; // より厳密な閾値
+        bool hasMediumFont = fontSizeRatio > 1.05;
         
         // 座標ベースの構造判定：左揃えでインデントが少ない
         var leftMostPosition = words.Min(w => w.BoundingBox.Left);
-        bool isLeftAligned = leftMostPosition <= 80.0; // 左から80ポイント以内
+        bool isLeftAligned = leftMostPosition <= 100.0; // より寛容な左揃え判定
         
-        // テキスト特性分析
+        // テキスト特性分析の改善
         var wordCount = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Length;
-        bool isShortText = cleanText.Length <= 50;
-        bool isConceptualText = wordCount <= 8; // 概念的な短い表現
+        bool isShortText = cleanText.Length <= 60; // より寛容
+        bool isConceptualText = wordCount <= 10; // より寛容な単語数
         
-        // ヘッダーらしい構造的特徴
+        // 太字フォーマットの検出
+        bool hasBoldFormatting = words.Any(w => 
+        {
+            var fontName = w.FontName?.ToLowerInvariant() ?? "";
+            return fontName.Contains("bold") || fontName.Contains("black") || fontName.Contains("heavy") ||
+                   fontName.Contains("600") || fontName.Contains("700") || fontName.Contains("800") || fontName.Contains("900");
+        });
+        
+        // 数字で始まるヘッダーパターン（章番号など）
+        bool hasNumberedHeader = System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^\d+\.?\s+[^\d]");
+        
+        // ヘッダーらしい構造的特徴の改善
         bool hasHeaderCharacteristics = 
             isShortText && isConceptualText && isLeftAligned &&
             !cleanText.EndsWith("。") && !cleanText.EndsWith(".") &&
-            !cleanText.Contains("、") && !cleanText.Contains(",");
+            !cleanText.Contains("、") && !cleanText.Contains(",") &&
+            !cleanText.Contains("http") && !cleanText.Contains("www");
         
-        // フォントサイズが大きいか、構造的特徴を持つ場合はヘッダー
-        return hasLargeFont || hasHeaderCharacteristics;
+        // 複合的な判定条件
+        return hasLargeFont || 
+               (hasMediumFont && (hasBoldFormatting || hasNumberedHeader)) ||
+               (hasHeaderCharacteristics && (hasBoldFormatting || hasNumberedHeader));
     }
     
     private static bool IsCodeBlockLike(string text, List<Word> words, FontAnalysis fontAnalysis)
@@ -912,16 +1033,33 @@ internal class PdfStructureAnalyzer
             
             // 改良されたフォント検出パターン
             
-            // 太字判定：より包括的なパターン
-            var boldPattern = @"(bold|black|heavy|semibold|demibold|medium|[6789]00|w[5-9])";
-            if (System.Text.RegularExpressions.Regex.IsMatch(fontName, boldPattern))
+            // 太字判定：より包括的で厳密なパターン
+            var boldPattern = @"(bold|black|heavy|semibold|demibold|extrabold|ultrabold|medium|[6789]00|w[5-9]|thick|dark|strength)";
+            if (System.Text.RegularExpressions.Regex.IsMatch(fontName, boldPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase))
             {
                 formatting.IsBold = true;
             }
             
+            // フォントウェイト番号による太字判定の強化
+            var weightMatch = System.Text.RegularExpressions.Regex.Match(fontName, @"(\d{3})");
+            if (weightMatch.Success && int.TryParse(weightMatch.Groups[1].Value, out int weight))
+            {
+                if (weight >= 600) // 600以上は太字とみなす
+                {
+                    formatting.IsBold = true;
+                }
+            }
+            
             // 斜体判定：より包括的で柔軟なパターン（大文字小文字を無視）
-            var italicPattern = @"(italic|oblique|slanted|cursive|emphasis|stress|kursiv|inclined|tilted)";
+            var italicPattern = @"(italic|oblique|slanted|cursive|emphasis|stress|kursiv|inclined|tilted|skewed|angled)";
             if (System.Text.RegularExpressions.Regex.IsMatch(fontName, italicPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                formatting.IsItalic = true;
+            }
+            
+            // 追加の斜体パターン検出
+            if (fontName.Contains("-i") || fontName.Contains("_i") || fontName.EndsWith("i") ||
+                fontName.Contains("-it") || fontName.Contains("_it") || fontName.EndsWith("it"))
             {
                 formatting.IsItalic = true;
             }

@@ -39,8 +39,9 @@ internal static class PdfWordProcessor
                 var wordHeight = wordTop - wordBottom;
                 var overlapRatio = wordHeight > 0 ? overlap / wordHeight : 0;
                 
-                // 重複率が高い、または距離が閾値内で最も近い行を選択
-                if ((overlapRatio > 0.3 || distance <= Math.Max(yThreshold, lineHeight * 0.6)) && 
+                // 重複率が高い、または距離が閾値内で最も近い行を選択（改善版）
+                var dynamicThreshold = Math.Max(yThreshold, Math.Min(lineHeight * 0.8, wordHeight * 0.8));
+                if ((overlapRatio > 0.25 || distance <= dynamicThreshold) && 
                     distance < bestMatch)
                 {
                     bestMatch = distance;
@@ -97,11 +98,14 @@ internal static class PdfWordProcessor
             var currentWordHeight = words[i].BoundingBox.Height;
             var lastGroupAvgHeight = lastGroup.Count > 0 ? lastGroup.Average(w => w.BoundingBox.Height) : currentWordHeight;
             
-            // 文字サイズに基づく動的な閾値調整
-            var adaptiveThreshold = Math.Max(xThreshold, Math.Min(currentWordHeight, lastGroupAvgHeight) * 0.3);
+            // 文字サイズに基づく動的な閾値調整（改善版）
+            var fontBasedThreshold = Math.Min(currentWordHeight, lastGroupAvgHeight) * 0.4;
+            var adaptiveThreshold = Math.Max(xThreshold, fontBasedThreshold);
             
             // 文字の重複やマイナス距離の場合は強制的に統合
-            if (distance < adaptiveThreshold || distance < 0)
+            // また、同じ単語の文字間スペースが異常に大きい場合も考慮
+            if (distance < adaptiveThreshold || distance < 0 || 
+                (distance <= fontBasedThreshold * 2 && ShouldMergeWords(lastGroup.Last(), words[i])))
             {
                 // 近接している場合は同じグループに追加
                 lastGroup.Add(words[i]);
@@ -118,5 +122,25 @@ internal static class PdfWordProcessor
     private static double GetMaxRight(IEnumerable<Word> words)
     {
         return words.Count() == 0 ? 0 : words.Select(w => w.BoundingBox.Right).Max();
+    }
+    
+    private static bool ShouldMergeWords(Word word1, Word word2)
+    {
+        // フォントサイズと名前が似ている場合は同じ文字列の一部の可能性
+        var fontSizeDiff = Math.Abs(word1.BoundingBox.Height - word2.BoundingBox.Height);
+        var fontSizeThreshold = Math.Min(word1.BoundingBox.Height, word2.BoundingBox.Height) * 0.1;
+        
+        var font1 = word1.FontName ?? "";
+        var font2 = word2.FontName ?? "";
+        bool sameFontFamily = font1.Equals(font2, StringComparison.OrdinalIgnoreCase) ||
+                             (font1.Length > 0 && font2.Length > 0 && 
+                              font1.Substring(0, Math.Min(font1.Length, 6)).Equals(
+                                  font2.Substring(0, Math.Min(font2.Length, 6)), StringComparison.OrdinalIgnoreCase));
+        
+        // 垂直位置も考慮
+        var verticalDistance = Math.Abs(word1.BoundingBox.Bottom - word2.BoundingBox.Bottom);
+        var heightThreshold = Math.Max(word1.BoundingBox.Height, word2.BoundingBox.Height) * 0.3;
+        
+        return fontSizeDiff <= fontSizeThreshold && sameFontFamily && verticalDistance <= heightThreshold;
     }
 }
