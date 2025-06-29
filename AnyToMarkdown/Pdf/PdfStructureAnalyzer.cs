@@ -29,6 +29,9 @@ internal class PdfStructureAnalyzer
             elements.Add(element);
         }
 
+        // 事前処理：<br>タグで分割されたテーブル内容の統合
+        elements = PostProcessor.ConsolidateBrokenTableCells(elements);
+        
         // 後処理：コンテキスト情報を活用した要素分類の改善（テーブル検出前）
         elements = PostProcessor.PostProcessElementClassification(elements, fontAnalysis);
         

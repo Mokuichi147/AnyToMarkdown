@@ -135,18 +135,19 @@ internal static class TableProcessor
     {
         if (string.IsNullOrEmpty(cellContent)) return "";
         
-        // テーブルセルでの<br>を確実に除去（強制・全パターン対応）
-        cellContent = cellContent.Replace("<br>", "").Replace("<br/>", "").Replace("<BR>", "").Replace("<BR/>", "").Replace("<br />", "");
-        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br\s*/?>\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        // テーブルセルでの<br>をMarkdown改行（スペース2個+改行）に変換
+        cellContent = cellContent.Replace("<br>", "  \n").Replace("<br/>", "  \n").Replace("<BR>", "  \n").Replace("<BR/>", "  \n").Replace("<br />", "  \n");
+        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"<br\s*/?>\s*", "  \n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         
         // パイプ文字をエスケープ
         cellContent = cellContent.Replace("|", "\\|");
         
-        // 改行を適切に処理
-        cellContent = cellContent.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+        // 通常の改行は空白に変換（<br>以外の改行）
+        cellContent = cellContent.Replace("\r\n", " ").Replace("\r", " ");
+        // \nは<br>変換後のものなので保持
         
-        // 余分なスペースを除去
-        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"\s+", " ");
+        // 余分なスペースを除去（但し、行末の2個スペース+\nは保持）
+        cellContent = System.Text.RegularExpressions.Regex.Replace(cellContent, @"(?<!  )\s+(?!\n)", " ");
         
         return cellContent.Trim();
     }

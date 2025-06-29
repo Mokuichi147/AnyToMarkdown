@@ -180,6 +180,102 @@ internal static class PostProcessor
         
         return result;
     }
+    
+    public static List<DocumentElement> ConsolidateBrokenTableCells(List<DocumentElement> elements)
+    {
+        var result = new List<DocumentElement>();
+        
+        for (int i = 0; i < elements.Count; i++)
+        {
+            var current = elements[i];
+            
+            // パイプ記号を含む行（テーブル行またはテーブル行候補）
+            if ((current.Type == ElementType.TableRow || current.Type == ElementType.Paragraph) && 
+                current.Content.Contains("|"))
+            {
+                var consolidatedContent = current.Content;
+                var consolidatedElement = new DocumentElement
+                {
+                    Type = ElementType.TableRow,  // テーブル行として扱う
+                    Content = consolidatedContent,
+                    FontSize = current.FontSize,
+                    LeftMargin = current.LeftMargin,
+                    IsIndented = current.IsIndented,
+                    Words = current.Words
+                };
+                
+                // 続く段落でテーブル行の続きと思われるものを統合
+                int j = i + 1;
+                while (j < elements.Count)
+                {
+                    var next = elements[j];
+                    
+                    // 空行は飛ばす
+                    if (next.Type == ElementType.Empty)
+                    {
+                        j++;
+                        continue;
+                    }
+                    
+                    // テーブル行の続きと判定される条件
+                    if (next.Type == ElementType.Paragraph && ShouldMergeIntoTableCell(current, next))
+                    {
+                        // <br>タグを使って統合
+                        consolidatedContent = consolidatedContent + "<br>" + next.Content.Trim();
+                        consolidatedElement.Content = consolidatedContent;
+                        j++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                
+                // 統合した要素を追加
+                result.Add(consolidatedElement);
+                
+                // 統合した要素をスキップ
+                i = j - 1;
+            }
+            else
+            {
+                result.Add(current);
+            }
+        }
+        
+        return result;
+    }
+    
+    private static bool ShouldMergeIntoTableCell(DocumentElement tableRow, DocumentElement paragraph)
+    {
+        var paragraphText = paragraph.Content.Trim();
+        
+        // 空の段落は統合しない
+        if (string.IsNullOrWhiteSpace(paragraphText))
+        {
+            return false;
+        }
+        
+        // 段落が短く、テーブル行の続きと思われる場合
+        if (paragraphText.Length < 100 && !paragraphText.Contains("|"))
+        {
+            // 段落がテーブル行に近い位置にある
+            if (Math.Abs(tableRow.LeftMargin - paragraph.LeftMargin) < 30.0)
+            {
+                return true;
+            }
+        }
+        
+        // 段落が明らかに独立した内容でない場合（句読点で終わらない）
+        if (!paragraphText.EndsWith("。") && !paragraphText.EndsWith(".") && 
+            !paragraphText.EndsWith("！") && !paragraphText.EndsWith("!") &&
+            paragraphText.Length < 50)
+        {
+            return true;
+        }
+        
+        return false;
+    }
 
     private static bool ShouldMergeParagraphs(DocumentElement previous, DocumentElement current)
     {
