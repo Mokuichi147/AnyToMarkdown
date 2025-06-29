@@ -116,33 +116,41 @@ internal static class MarkdownGenerator
         var currentText = current.Content.Trim();
         var nextText = next.Content.Trim();
         
-        // 短いテキスト（15文字以下）のみ統合対象
-        if (currentText.Length > 15 || nextText.Length > 15)
+        // 文章の区切りを示す文字で終わっている場合は統合しない
+        if (currentText.EndsWith(".") || currentText.EndsWith("。") || 
+            currentText.EndsWith("!") || currentText.EndsWith("？") ||
+            currentText.EndsWith("?") || currentText.EndsWith("！"))
+        {
+            return false;
+        }
+        
+        // 次の文が大文字で始まっている場合は新しい文の可能性
+        if (nextText.Length > 0 && char.IsUpper(nextText[0]))
         {
             return false;
         }
         
         // フォントサイズ差が大きい場合は統合しない
-        if (Math.Abs(current.FontSize - next.FontSize) > 0.5)
+        if (Math.Abs(current.FontSize - next.FontSize) > 1.0)
         {
             return false;
         }
         
         // Markdown記法の特殊文字を含む場合は統合しない
-        if (currentText.Contains(":") || nextText.Contains(":"))
+        if (ContainsMarkdownSyntax(currentText) || ContainsMarkdownSyntax(nextText))
         {
             return false;
         }
         
-        // 垂直距離による判定を強化
+        // 垂直距離による判定
         if (current.Words.Count > 0 && next.Words.Count > 0)
         {
             var currentBottom = current.Words.Min(w => w.BoundingBox.Bottom);
             var nextTop = next.Words.Max(w => w.BoundingBox.Top);
             var verticalGap = Math.Abs(currentBottom - nextTop);
             
-            // より厳しい垂直ギャップ制限
-            if (verticalGap > 8.0)
+            // 適度な垂直ギャップ制限
+            if (verticalGap > 15.0)
             {
                 return false;
             }
@@ -172,9 +180,14 @@ internal static class MarkdownGenerator
             ElementType.CodeBlock => BlockProcessor.ConvertCodeBlock(element, allElements, currentIndex),
             ElementType.QuoteBlock => BlockProcessor.ConvertQuoteBlock(element, allElements, currentIndex),
             ElementType.HorizontalLine => BlockProcessor.ConvertHorizontalLine(element),
-            ElementType.Paragraph => ConvertParagraph(element, fontAnalysis),
+            ElementType.Paragraph => ConvertParagraph(element),
             _ => element.Content
         };
+    }
+
+    private static string ConvertParagraph(DocumentElement element)
+    {
+        return element.Content?.Trim() ?? "";
     }
 
     private static string ConvertHeader(DocumentElement element, FontAnalysis fontAnalysis)

@@ -8,6 +8,12 @@ internal static class TableProcessor
 {
     public static string ConvertTableRow(DocumentElement element, List<DocumentElement> allElements, int currentIndex)
     {
+        // 既に処理済みのテーブル行かチェック
+        if (currentIndex > 0 && allElements[currentIndex - 1].Type == ElementType.TableRow)
+        {
+            return ""; // 前の行で既に処理済み
+        }
+        
         // 連続するテーブル行を検出
         var consecutiveTableRows = new List<DocumentElement> { element };
         
@@ -166,11 +172,23 @@ internal static class TableProcessor
         // 座標ベースのセル分割
         if (row.Words?.Count > 0)
         {
-            return ParseTableCellsWithBoundaries(row);
+            var coordinateCells = ParseTableCellsWithBoundaries(row);
+            if (coordinateCells.Count > 1)
+            {
+                return coordinateCells;
+            }
         }
         
         // フォールバック：テキストベースの分割
-        return SplitTextIntoTableCells(row.Content);
+        var textCells = SplitTextIntoTableCells(row.Content);
+        
+        // 単一セルの場合は無理に分割しない
+        if (textCells.Count <= 1)
+        {
+            return [row.Content.Trim()];
+        }
+        
+        return textCells;
     }
 
     private static List<string> ParseTableCellsWithBoundaries(DocumentElement row)

@@ -42,6 +42,18 @@ internal static class BlockProcessor
     {
         // 様々なリストマーカーを標準的なMarkdown形式に変換
         
+        // 太字装飾が含まれている場合の処理を最初に行う
+        if (content.StartsWith("*") && content.Contains("*"))
+        {
+            // *•項目* のような形式を処理
+            var asteriskPattern = System.Text.RegularExpressions.Regex.Match(content, @"^\*([•・‒–—\-\*\+])(.*?)\*(.*)");
+            if (asteriskPattern.Success)
+            {
+                var restContent = asteriskPattern.Groups[2].Value + asteriskPattern.Groups[3].Value;
+                return "- " + restContent.TrimStart();
+            }
+        }
+        
         // 日本語の箇条書き記号
         if (content.StartsWith("・") || content.StartsWith("•"))
         {
@@ -85,8 +97,16 @@ internal static class BlockProcessor
             return $"- {parenAlphaMatch.Groups[2].Value}";
         }
         
-        // デフォルト：既存のコンテンツの前に "- " を追加
-        return "- " + content;
+        // デフォルト：既存のコンテンツの前に "- " を追加（フォーマット記号を除去）
+        var cleanContent = content;
+        
+        // 開始と終了の*を除去
+        if (cleanContent.StartsWith("*") && cleanContent.EndsWith("*"))
+        {
+            cleanContent = cleanContent.Substring(1, cleanContent.Length - 2);
+        }
+        
+        return "- " + cleanContent.TrimStart();
     }
 
     public static string ConvertCodeBlock(DocumentElement element, List<DocumentElement> allElements, int currentIndex)

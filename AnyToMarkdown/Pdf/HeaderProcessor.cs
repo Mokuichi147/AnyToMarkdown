@@ -39,11 +39,11 @@ internal static class HeaderProcessor
         }
         
         // より精密なレベル決定（フォントサイズを主軸に）
-        if (baseFontRatio >= 2.0 || combinedScore >= 0.9) return 1;   // 大見出し
-        if (baseFontRatio >= 1.6 || combinedScore >= 0.75) return 2;  // 中見出し  
-        if (baseFontRatio >= 1.4 || combinedScore >= 0.60) return 3;  // 小見出し
-        if (baseFontRatio >= 1.2 || combinedScore >= 0.50) return 4;  // 細見出し
-        if (baseFontRatio >= 1.1 || combinedScore >= 0.40) return 5;  // 最小見出し
+        if (baseFontRatio >= 1.8 || combinedScore >= 0.9) return 1;   // 大見出し
+        if (baseFontRatio >= 1.5 || combinedScore >= 0.75) return 2;  // 中見出し  
+        if (baseFontRatio >= 1.3 || combinedScore >= 0.60) return 3;  // 小見出し
+        if (baseFontRatio >= 1.15 || combinedScore >= 0.50) return 4;  // 細見出し
+        if (baseFontRatio >= 1.05 || combinedScore >= 0.40) return 5;  // 最小見出し
         return 6;
     }
     

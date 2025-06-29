@@ -75,23 +75,8 @@ internal static class ElementClassifier
         // 連続するスペースを統合し、前後の空白を除去
         var finalText = result.ToString().Trim();
         
-        // 単語間にスペースを追加する必要がある場合の処理
-        var wordsWithSpacing = new System.Text.StringBuilder();
-        
-        foreach (var word in wordGroup)
-        {
-            var currentText = word.Text?.Trim() ?? "";
-            if (string.IsNullOrEmpty(currentText)) continue;
-            
-            if (wordsWithSpacing.Length > 0) wordsWithSpacing.Append(" ");
-            
-            var formattedText = FontAnalyzer.ApplyFormatting(currentText, FontAnalyzer.AnalyzeFontFormatting([word]));
-            
-            if (result.Length > 0) result.Append(" ");
-            result.Append(formattedText);
-        }
-        
-        return result.ToString();
+        // 重複を避けるため、最初のアプローチの結果をそのまま使用
+        return finalText;
     }
 
     private static bool IsHorizontalLine(string text)
@@ -128,18 +113,35 @@ internal static class ElementClassifier
         // 既にMarkdownヘッダーの場合
         if (text.StartsWith("#")) return true;
         
-        // 短いテキスト（通常ヘッダーは簡潔）
-        if (text.Length > 100) return false;
+        // Markdownの書式記号で囲まれたテキストはヘッダーではない
+        if ((text.StartsWith("**") && text.EndsWith("**")) ||
+            (text.StartsWith("*") && text.EndsWith("*") && !text.StartsWith("**")) ||
+            (text.StartsWith("_") && text.EndsWith("_")) ||
+            (text.StartsWith("`") && text.EndsWith("`")))
+        {
+            return false;
+        }
         
-        // フォントサイズベースの判定
+        // 明らかに段落テキストでない場合の判定を厳しくする
+        if (text.Length > 80) return false;
+        
+        // 句読点で終わる文章は通常ヘッダーではない
+        if (text.EndsWith(".") || text.EndsWith("。") || text.EndsWith("、") || text.EndsWith(",")) return false;
+        
+        // 接続詞や助詞で始まる文は通常ヘッダーではない（日本語対応）
+        if (text.StartsWith("と") || text.StartsWith("の") || text.StartsWith("が") || text.StartsWith("を") ||
+            text.StartsWith("and ") || text.StartsWith("or ") || text.StartsWith("but ") || text.StartsWith("the ")) return false;
+        
+        // フォントサイズベースの判定（より厳しく）
         var fontRatio = fontSize / fontAnalysis.BaseFontSize;
-        if (fontRatio >= 1.3) return true;
+        if (fontRatio >= 1.4) return true; // 閾値を上げる
         
-        // 左端配置（インデントされていない）
-        if (leftPosition < 50 && fontRatio >= 1.1) return true;
+        // 左端配置かつ大きなフォントの場合のみ
+        if (leftPosition < 50 && fontRatio >= 1.25) return true; // 閾値を上げる
         
-        // 全て大文字の短いテキスト
-        if (text.Length <= 50 && text.All(c => char.IsUpper(c) || char.IsWhiteSpace(c) || char.IsPunctuation(c)))
+        // 全て大文字の短いテキスト（より厳しく）
+        if (text.Length <= 30 && text.Length >= 3 && 
+            text.All(c => char.IsUpper(c) || char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsDigit(c)))
         {
             return true;
         }
@@ -180,7 +182,7 @@ internal static class ElementClassifier
     private static bool IsCodeBlock(string text, string cleanText)
     {
         // バッククォートで囲まれたコード
-        if (text.StartsWith("```") || text.StartsWith("`")) return true;
+        if (text.StartsWith("```") || (text.StartsWith("`") && text.EndsWith("`"))) return true;
         
         // インデントされたコード（4スペース以上）
         if (text.StartsWith("    ") || text.StartsWith("\t")) return true;
@@ -192,7 +194,11 @@ internal static class ElementClassifier
             @"^(public|private|protected|static)\s+",
             @"^\s*(if|else|for|while|switch|try|catch)\s*\(",
             @"^#include\s+",
-            @"^\s*<\w+.*>.*<\/\w+>\s*$" // HTML tags
+            @"^\s*<\w+.*>.*<\/\w+>\s*$", // HTML tags
+            @"console\.(log|error|warn|info)\s*\(",
+            @"print\s*\(",
+            @"System\.(out|err)\.print",
+            @"^[a-zA-Z_]\w*\s*\(.*\)\s*\{?$" // Function calls
         };
         
         return codePatterns.Any(pattern => 

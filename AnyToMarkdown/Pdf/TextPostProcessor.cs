@@ -134,8 +134,8 @@ internal static class TextPostProcessor
         text = System.Text.RegularExpressions.Regex.Replace(text, @"&gt;", ">");
         text = System.Text.RegularExpressions.Regex.Replace(text, @"&quot;", "\"");
         
-        // 余分な空白を統合
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
+        // 余分な空白を統合（改行は保持）
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"[ \t]+", " ");
         
         return text.Trim();
     }
