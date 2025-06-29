@@ -22,11 +22,11 @@ internal static class ElementClassifier
         // 水平線の検出（強化版）
         if (IsHorizontalLine(text)) return ElementType.HorizontalLine;
 
+        // リスト項目の検出（最も包括的）- ヘッダーより先にチェック
+        if (IsListItem(text, cleanText)) return ElementType.ListItem;
+
         // ヘッダーの詳細検出
         if (IsHeader(cleanText, avgFontSize, fontAnalysis, leftPosition)) return ElementType.Header;
-
-        // リスト項目の検出（最も包括的）
-        if (IsListItem(text, cleanText)) return ElementType.ListItem;
 
         // コードブロックの検出
         if (IsCodeBlock(text, cleanText)) return ElementType.CodeBlock;
@@ -123,23 +123,37 @@ internal static class ElementClassifier
         }
         
         // 明らかに段落テキストでない場合の判定を厳しくする
-        if (text.Length > 80) return false;
+        if (text.Length > 60) return false;
         
-        // 句読点で終わる文章は通常ヘッダーではない
-        if (text.EndsWith(".") || text.EndsWith("。") || text.EndsWith("、") || text.EndsWith(",")) return false;
+        // 句読点で終わる文章は通常ヘッダーではない（段落テキストの典型）
+        if (text.EndsWith(".") || text.EndsWith("。") || text.EndsWith("、") || text.EndsWith(",") ||
+            text.EndsWith("です。") || text.EndsWith("だ。") || text.EndsWith("である。") ||
+            text.EndsWith("ます。") || text.EndsWith("だった。") || text.EndsWith("でした。"))
+        {
+            return false;
+        }
         
-        // 接続詞や助詞で始まる文は通常ヘッダーではない（日本語対応）
+        // 接続詞や助詞で始まる文、典型的な段落開始パターンは通常ヘッダーではない
         if (text.StartsWith("と") || text.StartsWith("の") || text.StartsWith("が") || text.StartsWith("を") ||
+            text.StartsWith("これは") || text.StartsWith("それは") || text.StartsWith("この") || text.StartsWith("その") ||
             text.StartsWith("and ") || text.StartsWith("or ") || text.StartsWith("but ") || text.StartsWith("the ")) return false;
         
-        // フォントサイズベースの判定（より厳しく）
+        // フォントサイズベースの判定（段落テキストとの区別を明確に）
         var fontRatio = fontSize / fontAnalysis.BaseFontSize;
-        if (fontRatio >= 1.4) return true; // 閾値を上げる
         
-        // 左端配置かつ大きなフォントの場合のみ
-        if (leftPosition < 50 && fontRatio >= 1.25) return true; // 閾値を上げる
+        // 明らかに大きなフォント（ヘッダーらしいフォントサイズ）
+        if (fontRatio >= 1.8) return true;
         
-        // 全て大文字の短いテキスト（より厳しく）
+        // ヘッダーっぽい特徴の組み合わせ
+        bool isShortText = text.Length <= 50;
+        bool hasNoPunctuation = !text.EndsWith(".") && !text.EndsWith("。") && !text.Contains("、") && !text.Contains(",");
+        bool isLargeFont = fontRatio >= 1.3;
+        bool isLeftAligned = leftPosition < 50;
+        
+        // 複数の条件を満たす場合のみヘッダーとする
+        if (isShortText && hasNoPunctuation && isLargeFont && isLeftAligned) return true;
+        
+        // 全て大文字の短いテキスト（タイトルの可能性）
         if (text.Length <= 30 && text.Length >= 3 && 
             text.All(c => char.IsUpper(c) || char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsDigit(c)))
         {
@@ -157,9 +171,11 @@ internal static class ElementClassifier
         // 番号付きリスト
         if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d+\.\s+")) return true;
         
-        // 日本語および国際的な箇条書き記号
-        if (cleanText.StartsWith("・") || cleanText.StartsWith("•")) return true;
-        if (cleanText.StartsWith("‒") || cleanText.StartsWith("–") || cleanText.StartsWith("—")) return true;
+        // 日本語および国際的な箇条書き記号（textとcleanTextの両方をチェック）
+        if (text.StartsWith("・") || text.StartsWith("•") || 
+            cleanText.StartsWith("・") || cleanText.StartsWith("•")) return true;
+        if (text.StartsWith("‒") || text.StartsWith("–") || text.StartsWith("—") ||
+            cleanText.StartsWith("‒") || cleanText.StartsWith("–") || cleanText.StartsWith("—")) return true;
         
         // 太字でフォーマットされたリスト記号も検出
         if (text.StartsWith("**‒**") || text.StartsWith("**–**") || text.StartsWith("**—**")) return true;
