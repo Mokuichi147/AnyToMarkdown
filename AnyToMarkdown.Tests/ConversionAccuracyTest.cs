@@ -193,9 +193,41 @@ public class ConversionAccuracyTest
             }
         }
 
-        // 厳格な基準: 80%以上のヘッダーがMarkdownヘッダーとして保持されていること
-        bool passed = (double)properMarkdownHeaders / totalHeaders >= 0.8;
-        string details = $"{properMarkdownHeaders}/{totalHeaders} headers preserved as Markdown headers";
+        // 厳格な基準: 95%以上のヘッダーがMarkdownヘッダーとして保持されていること
+        // ただし、レベル変更がある場合は品質低下として扱う
+        var exactMatches = 0;
+        var levelChanges = 0;
+        var lost = 0;
+        
+        foreach (var originalHeader in analysis.OriginalHeaders)
+        {
+            var headerText = ExtractHeaderText(originalHeader);
+            var headerLevel = GetHeaderLevel(originalHeader);
+            
+            bool exactMatch = analysis.ConvertedHeaders.Any(h => 
+                GetHeaderLevel(h) == headerLevel && 
+                ExtractHeaderText(h).Equals(headerText, StringComparison.OrdinalIgnoreCase));
+                
+            bool levelChanged = !exactMatch && analysis.ConvertedHeaders.Any(h => 
+                ExtractHeaderText(h).Equals(headerText, StringComparison.OrdinalIgnoreCase));
+            
+            if (exactMatch)
+                exactMatches++;
+            else if (levelChanged)
+                levelChanges++;
+            else
+                lost++;
+        }
+        
+        // Perfect matches get full credit, level changes get partial credit, lost headers get no credit
+        var effectiveScore = exactMatches + (levelChanges * 0.7);
+        bool passed = (effectiveScore / totalHeaders) >= 0.95;
+        
+        string details = $"{properMarkdownHeaders}/{totalHeaders} headers preserved";
+        if (levelChanges > 0 || lost > 0)
+        {
+            details += $" (Exact: {exactMatches}, Level changed: {levelChanges}, Lost: {lost})";
+        }
         
         return (passed, details);
     }
@@ -234,8 +266,8 @@ public class ConversionAccuracyTest
             if (sectionMatched) matchedSections++;
         }
 
-        // 厳格な基準: 80%以上のセクションが適切に保持されていること
-        bool passed = (double)matchedSections / totalSections >= 0.8;
+        // 厳格な基準: 90%以上のセクションが適切に保持されていること
+        bool passed = (double)matchedSections / totalSections >= 0.9;
         string details = $"{matchedSections}/{totalSections} sections preserved with high fidelity";
         
         return (passed, details);
@@ -247,21 +279,59 @@ public class ConversionAccuracyTest
             return (true, "No tables to validate");
 
         int properMarkdownTables = 0;
+        var issues = new List<string>();
+        
         foreach (var originalTable in analysis.OriginalTables)
         {
-            var originalTableContent = ExtractTableContentWords(originalTable);
+            bool foundValidTable = false;
             
-            // 厳格な基準: Markdownテーブルとして適切に保持されているか
-            bool preservedAsMarkdownTable = analysis.ConvertedTables.Any(convertedTable =>
-                CalculateTableContentSimilarity(originalTableContent, ExtractTableContentWords(convertedTable)) > 0.8); // 厳格な閾値
-
-            if (preservedAsMarkdownTable)
+            foreach (var convertedTable in analysis.ConvertedTables)
+            {
+                // Check for corruption indicators
+                if (HasTableCorruption(convertedTable))
+                {
+                    issues.Add($"Table corruption detected: {GetCorruptionDetails(convertedTable)}");
+                    continue;
+                }
+                
+                // Check structural integrity
+                if (!HasValidTableStructure(convertedTable))
+                {
+                    issues.Add($"Invalid table structure detected");
+                    continue;
+                }
+                
+                // First try structural equivalence (most accurate for well-formed tables)
+                if (AreTablesStructurallyEquivalent(originalTable, convertedTable))
+                {
+                    foundValidTable = true;
+                    break;
+                }
+                
+                // Fallback to content similarity check
+                var originalContent = ExtractTableContentWords(originalTable);
+                var convertedContent = ExtractTableContentWords(convertedTable);
+                var similarity = CalculateTableContentSimilarity(originalContent, convertedContent);
+                
+                if (similarity > 0.85) // Slightly relaxed for content-only comparison
+                {
+                    foundValidTable = true;
+                    break;
+                }
+            }
+            
+            if (foundValidTable)
                 properMarkdownTables++;
         }
 
-        // 厳格な基準: 80%以上のテーブルがMarkdownテーブルとして保持されていること
-        bool passed = (double)properMarkdownTables / analysis.OriginalTables.Count >= 0.8;
+        // Very strict: ALL tables must be perfectly preserved
+        bool passed = properMarkdownTables == analysis.OriginalTables.Count && issues.Count == 0;
         string details = $"{properMarkdownTables}/{analysis.OriginalTables.Count} tables preserved as Markdown tables";
+        
+        if (issues.Count > 0)
+        {
+            details += $" (Issues: {string.Join(", ", issues.Take(3))})"; // Show first 3 issues
+        }
         
         return (passed, details);
     }
@@ -271,24 +341,140 @@ public class ConversionAccuracyTest
         if (analysis.OriginalLists.Count == 0) 
             return (true, "No lists to validate");
 
-        int properMarkdownLists = 0;
-        foreach (var originalList in analysis.OriginalLists)
-        {
-            var originalListItems = ExtractListItems(originalList);
-            
-            // 厳格な基準: Markdownリストとして適切に保持されているか
-            bool preservedAsMarkdownList = analysis.ConvertedLists.Any(convertedList =>
-                CalculateListSimilarity(originalListItems, ExtractListItems(convertedList)) > 0.8); // 厳格な閾値
-
-            if (preservedAsMarkdownList)
-                properMarkdownLists++;
-        }
-
-        // 厳格な基準: 80%以上のリストがMarkdownリストとして保持されていること
-        bool passed = (double)properMarkdownLists / analysis.OriginalLists.Count >= 0.8;
-        string details = $"{properMarkdownLists}/{analysis.OriginalLists.Count} lists preserved as Markdown lists";
+        string convertedContent = string.Join("\n", analysis.ConvertedSections);
+        var listStructureAnalysis = AnalyzeListStructure(analysis, convertedContent);
+        
+        bool passed = listStructureAnalysis.PropertyPreserved && !listStructureAnalysis.HasCorruption;
+        string details = listStructureAnalysis.GenerateDetails();
         
         return (passed, details);
+    }
+
+    private static ListStructureAnalysis AnalyzeListStructure(MarkdownStructureAnalysis analysis, string convertedContent)
+    {
+        var result = new ListStructureAnalysis();
+        
+        // 1. リスト腐敗パターンの検出
+        result.HasCorruption = HasListCorruption(convertedContent);
+        if (result.HasCorruption)
+        {
+            result.CorruptionPatterns = DetectListCorruptionPatterns(convertedContent);
+        }
+        
+        // 2. 構造保持の検証
+        int properlyPreservedLists = 0;
+        foreach (var originalList in analysis.OriginalLists)
+        {
+            bool isPreserved = AreListStructuresEquivalent(originalList, analysis.ConvertedLists);
+            if (isPreserved)
+                properlyPreservedLists++;
+            else
+            {
+                result.ConversionIssues.Add(DiagnoseListConversionIssue(originalList, convertedContent));
+            }
+        }
+        
+        result.PropertyPreserved = (double)properlyPreservedLists / analysis.OriginalLists.Count >= 0.9;
+        result.PreservedCount = properlyPreservedLists;
+        result.TotalCount = analysis.OriginalLists.Count;
+        
+        return result;
+    }
+
+    private static bool HasListCorruption(string content)
+    {
+        // ネストリストの腐敗パターンを検出
+        var corruptionPatterns = new[]
+        {
+            @"\*\*‒\*\*",              // **‒** (太字になったダッシュ)
+            @"\*\*-\*\*",              // **-** (太字になったハイフン)
+            @"\*\*•\*\*",              // **•** (太字になった bullet)
+            @"\*\*\d+\.\*\*",          // **1.** (太字になった数字)
+            @"[^\n]*\*\*[‒−–—-]\*\*[^\n]*", // 太字内の各種ダッシュ文字
+        };
+        
+        return corruptionPatterns.Any(pattern => Regex.IsMatch(content, pattern));
+    }
+
+    private static List<string> DetectListCorruptionPatterns(string content)
+    {
+        var patterns = new List<string>();
+        
+        if (Regex.IsMatch(content, @"\*\*‒\*\*"))
+            patterns.Add("Nested lists converted to bold dashes (‒)");
+        if (Regex.IsMatch(content, @"\*\*-\*\*"))
+            patterns.Add("Nested lists converted to bold hyphens (-)");
+        if (Regex.IsMatch(content, @"\*\*•\*\*"))
+            patterns.Add("Nested lists converted to bold bullets (•)");
+        if (Regex.IsMatch(content, @"\*\*\d+\.\*\*"))
+            patterns.Add("Nested numbered lists converted to bold numbers");
+            
+        return patterns;
+    }
+
+    private static bool AreListStructuresEquivalent(string originalList, List<string> convertedLists)
+    {
+        var originalItems = ExtractListItems(originalList);
+        
+        foreach (var convertedList in convertedLists)
+        {
+            var convertedItems = ExtractListItems(convertedList);
+            if (CalculateListSimilarity(originalItems, convertedItems) > 0.8)
+                return true;
+        }
+        
+        return false;
+    }
+
+    private static string DiagnoseListConversionIssue(string originalList, string convertedContent)
+    {
+        var lines = originalList.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var nestedItems = lines.Where(line => line.TrimStart().StartsWith("  - ") || line.TrimStart().StartsWith("   ")).ToList();
+        
+        if (nestedItems.Any())
+        {
+            // ネストアイテムの内容が太字パターンとして現れているかチェック
+            foreach (var nestedItem in nestedItems)
+            {
+                var itemContent = nestedItem.Trim().Substring(2).Trim(); // "- " を除去
+                if (convertedContent.Contains($"**‒**{itemContent}") || 
+                    convertedContent.Contains($"**-**{itemContent}"))
+                {
+                    return $"Nested list item '{itemContent}' converted to bold symbol";
+                }
+            }
+        }
+        
+        return "List structure not preserved";
+    }
+
+    private class ListStructureAnalysis
+    {
+        public bool PropertyPreserved { get; set; }
+        public bool HasCorruption { get; set; }
+        public List<string> CorruptionPatterns { get; set; } = new();
+        public List<string> ConversionIssues { get; set; } = new();
+        public int PreservedCount { get; set; }
+        public int TotalCount { get; set; }
+        
+        public string GenerateDetails()
+        {
+            var details = $"{PreservedCount}/{TotalCount} lists properly preserved";
+            
+            if (HasCorruption)
+            {
+                details += " - CORRUPTION DETECTED";
+                if (CorruptionPatterns.Any())
+                    details += $": {string.Join(", ", CorruptionPatterns.Take(2))}";
+            }
+            
+            if (ConversionIssues.Any())
+            {
+                details += $" - Issues: {string.Join(", ", ConversionIssues.Take(2))}";
+            }
+            
+            return details;
+        }
     }
 
     private (bool Passed, string Details) EvaluateMarkdownFormattingAsTest(MarkdownStructureAnalysis analysis)
@@ -353,6 +539,7 @@ public class ConversionAccuracyTest
 
         int emphasisTests = 0;
         int preservedEmphasis = 0;
+        var issues = new List<string>();
 
         // 太字の保持確認（**と__）
         var boldDoubleAsterisk = Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
@@ -361,8 +548,33 @@ public class ConversionAccuracyTest
         if (boldDoubleAsterisk.Count > 0 || boldDoubleUnderscore.Count > 0)
         {
             emphasisTests++;
-            bool boldPreserved = convertedContent.Contains("**") || convertedContent.Contains("__");
-            if (boldPreserved) preservedEmphasis++;
+            bool boldPreserved = false;
+            
+            // Check for actual bold text preservation, not just the presence of markdown syntax
+            foreach (Match match in boldDoubleAsterisk)
+            {
+                var boldText = match.Groups[1].Value;
+                if (convertedContent.Contains($"**{boldText}**") || convertedContent.Contains($"__{boldText}__"))
+                {
+                    boldPreserved = true;
+                    break;
+                }
+            }
+            
+            foreach (Match match in boldDoubleUnderscore)
+            {
+                var boldText = match.Groups[1].Value;
+                if (convertedContent.Contains($"**{boldText}**") || convertedContent.Contains($"__{boldText}__"))
+                {
+                    boldPreserved = true;
+                    break;
+                }
+            }
+            
+            if (boldPreserved) 
+                preservedEmphasis++;
+            else
+                issues.Add("Bold text not preserved");
         }
 
         // 斜体の保持確認（*と_）
@@ -372,8 +584,33 @@ public class ConversionAccuracyTest
         if (italicAsterisk.Count > 0 || italicUnderscore.Count > 0)
         {
             emphasisTests++;
-            bool italicPreserved = convertedContent.Contains("*") || convertedContent.Contains("_");
-            if (italicPreserved) preservedEmphasis++;
+            bool italicPreserved = false;
+            
+            // Check for actual italic text preservation, not just the presence of markdown syntax
+            foreach (Match match in italicAsterisk)
+            {
+                var italicText = match.Groups[1].Value;
+                if (convertedContent.Contains($"*{italicText}*") || convertedContent.Contains($"_{italicText}_"))
+                {
+                    italicPreserved = true;
+                    break;
+                }
+            }
+            
+            foreach (Match match in italicUnderscore)
+            {
+                var italicText = match.Groups[1].Value;
+                if (convertedContent.Contains($"*{italicText}*") || convertedContent.Contains($"_{italicText}_"))
+                {
+                    italicPreserved = true;
+                    break;
+                }
+            }
+            
+            if (italicPreserved) 
+                preservedEmphasis++;
+            else
+                issues.Add("Italic text not preserved");
         }
 
         // 太字斜体の保持確認（***と___）
@@ -383,8 +620,32 @@ public class ConversionAccuracyTest
         if (boldItalicTripleAsterisk.Count > 0 || boldItalicTripleUnderscore.Count > 0)
         {
             emphasisTests++;
-            bool boldItalicPreserved = convertedContent.Contains("***") || convertedContent.Contains("___");
-            if (boldItalicPreserved) preservedEmphasis++;
+            bool boldItalicPreserved = false;
+            
+            foreach (Match match in boldItalicTripleAsterisk)
+            {
+                var text = match.Groups[1].Value;
+                if (convertedContent.Contains($"***{text}***") || convertedContent.Contains($"___{text}___"))
+                {
+                    boldItalicPreserved = true;
+                    break;
+                }
+            }
+            
+            foreach (Match match in boldItalicTripleUnderscore)
+            {
+                var text = match.Groups[1].Value;
+                if (convertedContent.Contains($"***{text}***") || convertedContent.Contains($"___{text}___"))
+                {
+                    boldItalicPreserved = true;
+                    break;
+                }
+            }
+            
+            if (boldItalicPreserved) 
+                preservedEmphasis++;
+            else
+                issues.Add("Bold-italic text not preserved");
         }
 
         if (emphasisTests == 0)
@@ -392,6 +653,11 @@ public class ConversionAccuracyTest
 
         bool passed = preservedEmphasis == emphasisTests;
         string details = $"{preservedEmphasis}/{emphasisTests} emphasis types preserved";
+        
+        if (issues.Count > 0)
+        {
+            details += $" (Issues: {string.Join(", ", issues)})";
+        }
         
         return (passed, details);
     }
@@ -403,14 +669,34 @@ public class ConversionAccuracyTest
 
         int linkTests = 0;
         int preservedLinks = 0;
+        var issues = new List<string>();
 
         // インラインリンクの保持確認
         var inlineLinks = Regex.Matches(originalContent, @"\[([^\]]+)\]\(([^)]+)\)");
         if (inlineLinks.Count > 0)
         {
             linkTests++;
-            bool inlineLinksPreserved = convertedContent.Contains("[") && convertedContent.Contains("](");
-            if (inlineLinksPreserved) preservedLinks++;
+            bool inlineLinksPreserved = false;
+            
+            // Check for actual link preservation, not just presence of brackets
+            foreach (Match match in inlineLinks)
+            {
+                var linkText = match.Groups[1].Value;
+                var linkUrl = match.Groups[2].Value.Split(' ')[0]; // Remove title if present
+                
+                // Look for the complete link structure
+                if (convertedContent.Contains($"[{linkText}]({linkUrl})") ||
+                    convertedContent.Contains($"[{linkText}]({match.Groups[2].Value})"))
+                {
+                    inlineLinksPreserved = true;
+                    break;
+                }
+            }
+            
+            if (inlineLinksPreserved) 
+                preservedLinks++;
+            else
+                issues.Add("Inline links not preserved or converted to other format");
         }
 
         // 自動リンクの保持確認
@@ -418,10 +704,26 @@ public class ConversionAccuracyTest
         if (autoLinks.Count > 0)
         {
             linkTests++;
-            bool autoLinksPreserved = convertedContent.Contains("<http") || 
-                                    autoLinks.Cast<Match>()
-                                    .Any(match => convertedContent.Contains(match.Groups[1].Value));
-            if (autoLinksPreserved) preservedLinks++;
+            bool autoLinksPreserved = false;
+            
+            // Check for actual auto-link preservation
+            foreach (Match match in autoLinks)
+            {
+                var url = match.Groups[1].Value;
+                
+                // Look for the URL in auto-link format or as plain URL
+                if (convertedContent.Contains($"<{url}>") ||
+                    convertedContent.Contains(url))
+                {
+                    autoLinksPreserved = true;
+                    break;
+                }
+            }
+            
+            if (autoLinksPreserved) 
+                preservedLinks++;
+            else
+                issues.Add("Auto-links not preserved");
         }
 
         if (linkTests == 0)
@@ -429,6 +731,11 @@ public class ConversionAccuracyTest
 
         bool passed = preservedLinks == linkTests;
         string details = $"{preservedLinks}/{linkTests} link types preserved";
+        
+        if (issues.Count > 0)
+        {
+            details += $" (Issues: {string.Join(", ", issues)})";
+        }
         
         return (passed, details);
     }
@@ -440,23 +747,55 @@ public class ConversionAccuracyTest
 
         int codeTests = 0;
         int preservedCode = 0;
+        var issues = new List<string>();
 
         // インラインコードの保持確認
         var inlineCode = Regex.Matches(originalContent, @"`([^`]+)`");
         if (inlineCode.Count > 0)
         {
             codeTests++;
-            bool inlineCodePreserved = convertedContent.Contains("`");
-            if (inlineCodePreserved) preservedCode++;
+            bool inlineCodePreserved = false;
+            
+            // Check for actual code content preservation, not just backticks
+            foreach (Match match in inlineCode)
+            {
+                var codeText = match.Groups[1].Value;
+                if (convertedContent.Contains($"`{codeText}`"))
+                {
+                    inlineCodePreserved = true;
+                    break;
+                }
+            }
+            
+            if (inlineCodePreserved) 
+                preservedCode++;
+            else
+                issues.Add("Inline code not preserved");
         }
 
         // コードブロックの保持確認
-        var codeBlocks = Regex.Matches(originalContent, @"```[^`]*```", RegexOptions.Singleline);
+        var codeBlocks = Regex.Matches(originalContent, @"```([^`]*)```", RegexOptions.Singleline);
         if (codeBlocks.Count > 0)
         {
             codeTests++;
-            bool codeBlocksPreserved = convertedContent.Contains("```");
-            if (codeBlocksPreserved) preservedCode++;
+            bool codeBlocksPreserved = false;
+            
+            // Check for actual code block content preservation
+            foreach (Match match in codeBlocks)
+            {
+                var codeText = match.Groups[1].Value.Trim();
+                if (convertedContent.Contains("```") && 
+                    (string.IsNullOrEmpty(codeText) || convertedContent.Contains(codeText)))
+                {
+                    codeBlocksPreserved = true;
+                    break;
+                }
+            }
+            
+            if (codeBlocksPreserved) 
+                preservedCode++;
+            else
+                issues.Add("Code blocks not preserved");
         }
 
         if (codeTests == 0)
@@ -465,7 +804,40 @@ public class ConversionAccuracyTest
         bool passed = preservedCode == codeTests;
         string details = $"{preservedCode}/{codeTests} code types preserved";
         
+        if (issues.Count > 0)
+        {
+            details += $" (Issues: {string.Join(", ", issues)})";
+        }
+        
         return (passed, details);
+    }
+    
+    private static double CalculateCodeSimilarity(string original, string converted)
+    {
+        if (string.IsNullOrWhiteSpace(original) && string.IsNullOrWhiteSpace(converted))
+            return 1.0;
+            
+        if (string.IsNullOrWhiteSpace(original) || string.IsNullOrWhiteSpace(converted))
+            return 0.0;
+            
+        // Normalize whitespace and compare
+        var normalizedOriginal = Regex.Replace(original.Trim(), @"\s+", " ");
+        var normalizedConverted = Regex.Replace(converted.Trim(), @"\s+", " ");
+        
+        if (normalizedOriginal.Equals(normalizedConverted, StringComparison.OrdinalIgnoreCase))
+            return 1.0;
+            
+        // Check if converted contains most of the original content
+        var originalWords = normalizedOriginal.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var convertedWords = normalizedConverted.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        
+        if (originalWords.Length == 0)
+            return convertedWords.Length == 0 ? 1.0 : 0.0;
+            
+        var matchingWords = originalWords.Count(word => 
+            convertedWords.Any(cw => cw.Equals(word, StringComparison.OrdinalIgnoreCase)));
+            
+        return (double)matchingWords / originalWords.Length;
     }
 
     private static (bool Passed, string Details) EvaluateQuotesAsTest(MarkdownStructureAnalysis analysis)
@@ -473,25 +845,221 @@ public class ConversionAccuracyTest
         string originalContent = string.Join("\n", analysis.OriginalSections);
         string convertedContent = string.Join("\n", analysis.ConvertedSections);
 
-        int quoteTests = 0;
-        int preservedQuotes = 0;
-
-        // 引用の保持確認
-        var quotes = Regex.Matches(originalContent, @"^>.*$", RegexOptions.Multiline);
-        if (quotes.Count > 0)
-        {
-            quoteTests++;
-            bool quotesPreserved = convertedContent.Contains(">");
-            if (quotesPreserved) preservedQuotes++;
-        }
-
-        if (quoteTests == 0)
-            return (true, "No quotes to validate");
-
-        bool passed = preservedQuotes == quoteTests;
-        string details = $"{preservedQuotes}/{quoteTests} quote types preserved";
+        var quoteAnalysis = AnalyzeQuoteStructure(originalContent, convertedContent);
+        
+        bool passed = quoteAnalysis.StructurePreserved && !quoteAnalysis.HasCorruption;
+        string details = quoteAnalysis.GenerateDetails();
         
         return (passed, details);
+    }
+
+    private static QuoteStructureAnalysis AnalyzeQuoteStructure(string originalContent, string convertedContent)
+    {
+        var result = new QuoteStructureAnalysis();
+        
+        // 1. 引用腐敗パターンの検出
+        result.HasCorruption = HasQuoteCorruption(convertedContent);
+        if (result.HasCorruption)
+        {
+            result.CorruptionPatterns = DetectQuoteCorruptionPatterns(convertedContent);
+        }
+        
+        // 2. 基本的な引用構造の検証
+        var originalQuotes = ExtractQuoteBlocks(originalContent);
+        var convertedQuotes = ExtractQuoteBlocks(convertedContent);
+        
+        result.OriginalQuoteCount = originalQuotes.Count;
+        result.ConvertedQuoteCount = convertedQuotes.Count;
+        
+        if (originalQuotes.Count == 0)
+        {
+            result.StructurePreserved = true;
+            return result;
+        }
+        
+        // 3. ネストされた引用構造の検証
+        result.NestedStructurePreserved = ValidateNestedQuoteStructure(originalQuotes, convertedQuotes);
+        
+        // 4. 引用内混合コンテンツの検証
+        result.MixedContentPreserved = ValidateQuoteMixedContent(originalContent, convertedContent);
+        
+        // 5. 総合評価
+        int structureTests = 0;
+        int passedTests = 0;
+        
+        if (originalQuotes.Count > 0)
+        {
+            structureTests++;
+            if (result.ConvertedQuoteCount > 0 && !result.HasCorruption)
+                passedTests++;
+        }
+        
+        if (HasNestedQuotes(originalContent))
+        {
+            structureTests++;
+            if (result.NestedStructurePreserved)
+                passedTests++;
+        }
+        
+        if (HasQuoteMixedContent(originalContent))
+        {
+            structureTests++;
+            if (result.MixedContentPreserved)
+                passedTests++;
+        }
+        
+        result.StructurePreserved = structureTests == 0 || (double)passedTests / structureTests >= 0.8;
+        
+        return result;
+    }
+
+    private static bool HasQuoteCorruption(string content)
+    {
+        // 引用構造の腐敗パターンを検出
+        var corruptionPatterns = new[]
+        {
+            @"単一\*\*引用\*\*文",           // 引用が太字になっている
+            @"複数行の\*\*引用\*\*文",       // 複数行引用が太字になっている
+            @"レベル1引用>レベル2引用»",     // ネスト引用が記号に変換
+            @"[^>]\s*\*\*[^*]+\*\*[^*]*(?:引用|quote)",  // 引用内容が太字化
+        };
+        
+        return corruptionPatterns.Any(pattern => Regex.IsMatch(content, pattern));
+    }
+
+    private static List<string> DetectQuoteCorruptionPatterns(string content)
+    {
+        var patterns = new List<string>();
+        
+        if (Regex.IsMatch(content, @"単一\*\*引用\*\*文"))
+            patterns.Add("Quote text converted to bold formatting");
+        if (Regex.IsMatch(content, @"複数行の\*\*引用\*\*文"))
+            patterns.Add("Multi-line quotes converted to bold");
+        if (Regex.IsMatch(content, @"レベル1引用>レベル2引用»"))
+            patterns.Add("Nested quotes converted to symbols (>, »)");
+        if (Regex.IsMatch(content, @"[^>]\s*\*\*[^*]+\*\*[^*]*(?:引用|quote)"))
+            patterns.Add("Quote content formatting corrupted");
+            
+        return patterns;
+    }
+
+    private static List<QuoteBlock> ExtractQuoteBlocks(string content)
+    {
+        var quotes = new List<QuoteBlock>();
+        var lines = content.Split('\n');
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var quoteMatch = Regex.Match(line, @"^(>+)\s*(.*)$");
+            if (quoteMatch.Success)
+            {
+                quotes.Add(new QuoteBlock
+                {
+                    Level = quoteMatch.Groups[1].Value.Length,
+                    Content = quoteMatch.Groups[2].Value.Trim(),
+                    LineNumber = i + 1
+                });
+            }
+        }
+        
+        return quotes;
+    }
+
+    private static bool ValidateNestedQuoteStructure(List<QuoteBlock> original, List<QuoteBlock> converted)
+    {
+        var originalNested = original.Where(q => q.Level > 1).ToList();
+        var convertedNested = converted.Where(q => q.Level > 1).ToList();
+        
+        if (originalNested.Count == 0)
+            return true;
+            
+        return convertedNested.Count > 0; // 最低限ネスト構造が検出されること
+    }
+
+    private static bool ValidateQuoteMixedContent(string originalContent, string convertedContent)
+    {
+        // 引用内のリスト、太字、斜体などの混合コンテンツが保持されているかチェック
+        var quoteLinesOriginal = originalContent.Split('\n')
+            .Where(line => line.TrimStart().StartsWith(">"))
+            .ToList();
+            
+        if (quoteLinesOriginal.Count == 0)
+            return true;
+            
+        var quoteLinesConverted = convertedContent.Split('\n')
+            .Where(line => line.TrimStart().StartsWith(">"))
+            .ToList();
+            
+        // 引用内の書式設定が保持されているか簡易チェック
+        bool hasOriginalFormatting = quoteLinesOriginal.Any(line => 
+            line.Contains("**") || line.Contains("*") || line.Contains("- ") || line.Contains("`"));
+            
+        if (!hasOriginalFormatting)
+            return true;
+            
+        bool hasConvertedFormatting = quoteLinesConverted.Any(line => 
+            line.Contains("**") || line.Contains("*") || line.Contains("- ") || line.Contains("`"));
+            
+        return hasConvertedFormatting;
+    }
+
+    private static bool HasNestedQuotes(string content)
+    {
+        return Regex.IsMatch(content, @"^>>\s*", RegexOptions.Multiline);
+    }
+
+    private static bool HasQuoteMixedContent(string content)
+    {
+        var quoteLines = content.Split('\n')
+            .Where(line => line.TrimStart().StartsWith(">"));
+            
+        return quoteLines.Any(line => 
+            line.Contains("**") || line.Contains("*") || line.Contains("- ") || line.Contains("`"));
+    }
+
+    private class QuoteBlock
+    {
+        public int Level { get; set; }
+        public string Content { get; set; } = string.Empty;
+        public int LineNumber { get; set; }
+    }
+
+    private class QuoteStructureAnalysis
+    {
+        public bool StructurePreserved { get; set; }
+        public bool HasCorruption { get; set; }
+        public bool NestedStructurePreserved { get; set; }
+        public bool MixedContentPreserved { get; set; }
+        public List<string> CorruptionPatterns { get; set; } = new();
+        public int OriginalQuoteCount { get; set; }
+        public int ConvertedQuoteCount { get; set; }
+        
+        public string GenerateDetails()
+        {
+            if (OriginalQuoteCount == 0)
+                return "No quotes to validate";
+                
+            var details = $"{ConvertedQuoteCount}/{OriginalQuoteCount} quote blocks detected";
+            
+            if (HasCorruption)
+            {
+                details += " - CORRUPTION DETECTED";
+                if (CorruptionPatterns.Any())
+                    details += $": {string.Join(", ", CorruptionPatterns.Take(2))}";
+            }
+            
+            var issues = new List<string>();
+            if (!NestedStructurePreserved)
+                issues.Add("Nested quotes corrupted");
+            if (!MixedContentPreserved)
+                issues.Add("Mixed content not preserved");
+                
+            if (issues.Any())
+                details += $" - Issues: {string.Join(", ", issues)}";
+            
+            return details;
+        }
     }
 
     private static (bool Passed, string Details) EvaluateOtherSyntaxAsTest(MarkdownStructureAnalysis analysis)
@@ -499,25 +1067,212 @@ public class ConversionAccuracyTest
         string originalContent = string.Join("\n", analysis.OriginalSections);
         string convertedContent = string.Join("\n", analysis.ConvertedSections);
 
-        int otherTests = 0;
-        int preservedOther = 0;
+        var contentAnalysis = AnalyzeContentIntegrity(originalContent, convertedContent);
+        
+        bool passed = contentAnalysis.OverallIntegrityMaintained && !contentAnalysis.HasCriticalCorruption;
+        string details = contentAnalysis.GenerateDetails();
+        
+        return (passed, details);
+    }
 
+    private static ContentIntegrityAnalysis AnalyzeContentIntegrity(string originalContent, string convertedContent)
+    {
+        var result = new ContentIntegrityAnalysis();
+        
+        // 1. 特殊文字・Unicode文字の保持検証
+        result.UnicodePreserved = ValidateUnicodePreservation(originalContent, convertedContent);
+        result.SpecialCharactersPreserved = ValidateSpecialCharacters(originalContent, convertedContent);
+        
+        // 2. 重大な腐敗パターンの検出
+        result.HasCriticalCorruption = DetectCriticalCorruption(convertedContent);
+        if (result.HasCriticalCorruption)
+        {
+            result.CorruptionPatterns = DetectContentCorruptionPatterns(convertedContent);
+        }
+        
+        // 3. 構造的完全性の検証
+        result.StructuralIntegrityMaintained = ValidateStructuralIntegrity(originalContent, convertedContent);
+        
+        // 4. その他のMarkdown記法保持
+        result.OtherSyntaxPreserved = ValidateOtherMarkdownSyntax(originalContent, convertedContent);
+        
+        // 5. 総合評価
+        int integrityTests = 0;
+        int passedTests = 0;
+        
+        integrityTests++; // Unicode/特殊文字
+        if (result.UnicodePreserved && result.SpecialCharactersPreserved)
+            passedTests++;
+            
+        integrityTests++; // 構造的完全性
+        if (result.StructuralIntegrityMaintained)
+            passedTests++;
+            
+        integrityTests++; // その他記法
+        if (result.OtherSyntaxPreserved)
+            passedTests++;
+        
+        result.OverallIntegrityMaintained = !result.HasCriticalCorruption && 
+                                           (double)passedTests / integrityTests >= 0.8;
+        
+        return result;
+    }
+
+    private static bool ValidateUnicodePreservation(string originalContent, string convertedContent)
+    {
+        // 日本語文字（ひらがな、カタカナ、漢字）の保持確認
+        var japaneseChars = new[]
+        {
+            @"[あ-ん]",     // ひらがな
+            @"[ア-ン]",     // カタカナ  
+            @"[一-龯]"      // 漢字
+        };
+        
+        foreach (var pattern in japaneseChars)
+        {
+            var originalMatches = Regex.Matches(originalContent, pattern);
+            var convertedMatches = Regex.Matches(convertedContent, pattern);
+            
+            if (originalMatches.Count > 0 && convertedMatches.Count == 0)
+                return false; // 日本語文字が失われている
+        }
+        
+        return true;
+    }
+
+    private static bool ValidateSpecialCharacters(string originalContent, string convertedContent)
+    {
+        // 特殊記号の保持確認（ただし、正しい文脈で）
+        var specialChars = new[] { "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "-", "=", "{", "}", "[", "]", "|", ";", "'", ":", "\"", ",", ".", "/", "<", ">", "?" };
+        
+        foreach (var specialChar in specialChars)
+        {
+            if (originalContent.Contains(specialChar))
+            {
+                if (!convertedContent.Contains(specialChar))
+                {
+                    // 特殊文字が完全に失われている場合は問題
+                    return false;
+                }
+            }
+        }
+        
+        return true;
+    }
+
+    private static bool DetectCriticalCorruption(string convertedContent)
+    {
+        var criticalCorruptionPatterns = new[]
+        {
+            @"\*\*‒\*\*",                   // ネストリスト腐敗
+            @"単一\*\*引用\*\*文",           // 引用腐敗
+            @"レベル1引用>レベル2引用»",      // ネスト引用腐敗  
+            @"\|[^|]*\|[^|]*\|\|̶̶",       // テーブル完全破綻
+            @"<br>\d+",                     // PDF座標情報混入
+            @"[A-Za-z]+\d+[A-Za-z]+\s*\|",  // テーブル内文字数字混合腐敗
+        };
+        
+        return criticalCorruptionPatterns.Any(pattern => Regex.IsMatch(convertedContent, pattern));
+    }
+
+    private static List<string> DetectContentCorruptionPatterns(string convertedContent)
+    {
+        var patterns = new List<string>();
+        
+        if (Regex.IsMatch(convertedContent, @"\*\*‒\*\*"))
+            patterns.Add("Nested lists corrupted to bold symbols");
+        if (Regex.IsMatch(convertedContent, @"単一\*\*引用\*\*文"))
+            patterns.Add("Quotes corrupted to bold text");
+        if (Regex.IsMatch(convertedContent, @"レベル1引用>レベル2引用»"))
+            patterns.Add("Nested quotes corrupted to symbols");
+        if (Regex.IsMatch(convertedContent, @"\|[^|]*\|[^|]*\|\|̶̶"))
+            patterns.Add("Tables completely corrupted");
+        if (Regex.IsMatch(convertedContent, @"<br>\d+"))
+            patterns.Add("PDF coordinate information leaked");
+        if (Regex.IsMatch(convertedContent, @"[A-Za-z]+\d+[A-Za-z]+\s*\|"))
+            patterns.Add("Table content merged incorrectly");
+            
+        return patterns;
+    }
+
+    private static bool ValidateStructuralIntegrity(string originalContent, string convertedContent)
+    {
+        // 基本的な構造が維持されているかチェック
+        var originalLines = originalContent.Split('\n').Where(line => !string.IsNullOrWhiteSpace(line)).Count();
+        var convertedLines = convertedContent.Split('\n').Where(line => !string.IsNullOrWhiteSpace(line)).Count();
+        
+        // 変換後に大幅に行数が減っている場合は構造的問題
+        if (originalLines > 0 && (double)convertedLines / originalLines < 0.5)
+            return false;
+            
+        return true;
+    }
+
+    private static bool ValidateOtherMarkdownSyntax(string originalContent, string convertedContent)
+    {
+        int syntaxTests = 0;
+        int preservedSyntax = 0;
+        
         // 水平線の保持確認
         var horizontalRules = Regex.Matches(originalContent, @"^(---+|\*\*\*+|___+)$", RegexOptions.Multiline);
         if (horizontalRules.Count > 0)
         {
-            otherTests++;
+            syntaxTests++;
             bool horizontalRulesPreserved = convertedContent.Contains("---") || convertedContent.Contains("***") || convertedContent.Contains("___");
-            if (horizontalRulesPreserved) preservedOther++;
+            if (horizontalRulesPreserved) preservedSyntax++;
         }
-
-        if (otherTests == 0)
-            return (true, "No other syntax to validate");
-
-        bool passed = preservedOther == otherTests;
-        string details = $"{preservedOther}/{otherTests} other syntax types preserved";
         
-        return (passed, details);
+        // エスケープ文字の保持確認
+        var escapedChars = Regex.Matches(originalContent, @"\\[*_#\[\]]");
+        if (escapedChars.Count > 0)
+        {
+            syntaxTests++;
+            // エスケープ文字が何らかの形で保持されているか
+            bool escapedPreserved = Regex.IsMatch(convertedContent, @"\\[*_#\[\]]") || 
+                                   convertedContent.Contains("エスケープ");
+            if (escapedPreserved) preservedSyntax++;
+        }
+        
+        if (syntaxTests == 0) return true;
+        
+        return (double)preservedSyntax / syntaxTests >= 0.8;
+    }
+
+    private class ContentIntegrityAnalysis
+    {
+        public bool OverallIntegrityMaintained { get; set; }
+        public bool HasCriticalCorruption { get; set; }
+        public bool UnicodePreserved { get; set; }
+        public bool SpecialCharactersPreserved { get; set; }
+        public bool StructuralIntegrityMaintained { get; set; }
+        public bool OtherSyntaxPreserved { get; set; }
+        public List<string> CorruptionPatterns { get; set; } = new();
+        
+        public string GenerateDetails()
+        {
+            var issues = new List<string>();
+            
+            if (HasCriticalCorruption)
+            {
+                issues.Add("CRITICAL CORRUPTION DETECTED");
+                if (CorruptionPatterns.Any())
+                    issues.Add($"Patterns: {string.Join(", ", CorruptionPatterns.Take(3))}");
+            }
+            
+            if (!UnicodePreserved)
+                issues.Add("Unicode characters lost");
+            if (!SpecialCharactersPreserved)
+                issues.Add("Special characters lost");
+            if (!StructuralIntegrityMaintained)
+                issues.Add("Structural integrity compromised");
+            if (!OtherSyntaxPreserved)
+                issues.Add("Other syntax not preserved");
+            
+            if (issues.Any())
+                return $"Content integrity failed - {string.Join(", ", issues.Take(3))}";
+            else
+                return "Content integrity maintained";
+        }
     }
 
 
@@ -721,6 +1476,123 @@ public class ConversionAccuracyTest
 
         return union == 0 ? 0.0 : (double)intersection / union;
     }
+    
+    private static bool AreTablesStructurallyEquivalent(string originalTable, string convertedTable)
+    {
+        var originalRows = NormalizeTableForComparison(originalTable);
+        var convertedRows = NormalizeTableForComparison(convertedTable);
+        
+        if (originalRows.Count != convertedRows.Count)
+            return false;
+            
+        // Check if each row has the same data content (ignoring formatting)
+        for (int i = 0; i < originalRows.Count; i++)
+        {
+            var originalCells = originalRows[i];
+            var convertedCells = convertedRows[i];
+            
+            if (originalCells.Count != convertedCells.Count)
+                return false;
+                
+            for (int j = 0; j < originalCells.Count; j++)
+            {
+                var originalCell = CleanCellContent(originalCells[j]);
+                var convertedCell = CleanCellContent(convertedCells[j]);
+                
+                // Allow some flexibility in cell content matching
+                if (!AreCellContentsEquivalent(originalCell, convertedCell))
+                    return false;
+            }
+        }
+        
+        return true;
+    }
+    
+    private static List<List<string>> NormalizeTableForComparison(string tableContent)
+    {
+        var lines = tableContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var rows = new List<List<string>>();
+        
+        foreach (var line in lines)
+        {
+            if (!line.Contains('|')) continue;
+            
+            // Skip all separator rows regardless of alignment syntax
+            // This includes |---|, |:---|, |---:|, |:---:| patterns
+            if (IsSeparatorRow(line)) continue;
+            
+            var normalizedRow = NormalizeTableRow(line);
+            var cells = ExtractTableCells(normalizedRow);
+            
+            if (cells.Count > 0)
+                rows.Add(cells);
+        }
+        
+        return rows;
+    }
+    
+    private static List<string> ExtractTableCells(string normalizedRow)
+    {
+        // Split by pipes and clean up the cells
+        var parts = normalizedRow.Split('|');
+        var cells = new List<string>();
+        
+        foreach (var part in parts)
+        {
+            var trimmed = part.Trim();
+            if (!string.IsNullOrEmpty(trimmed) || cells.Count > 0) // Include empty cells in the middle
+            {
+                cells.Add(trimmed);
+            }
+        }
+        
+        // Remove trailing empty cell if it exists (from trailing pipe)
+        if (cells.Count > 0 && string.IsNullOrEmpty(cells[cells.Count - 1]))
+        {
+            cells.RemoveAt(cells.Count - 1);
+        }
+        
+        return cells;
+    }
+    
+    private static bool IsSeparatorRow(string line)
+    {
+        // Remove pipes, spaces, and colons, then check if only dashes remain
+        var cleaned = line.Replace("|", "").Replace(" ", "").Replace(":", "");
+        
+        // Must contain at least one dash and only dashes
+        return cleaned.Length > 0 && cleaned.All(c => c == '-');
+    }
+    
+    private static string CleanCellContent(string cellContent)
+    {
+        // Remove extra whitespace and normalize content
+        return cellContent.Trim().Replace("  ", " ");
+    }
+    
+    private static bool AreCellContentsEquivalent(string cell1, string cell2)
+    {
+        // Exact match
+        if (cell1.Equals(cell2, StringComparison.OrdinalIgnoreCase))
+            return true;
+            
+        // Check if one contains the other (for cases where formatting changes content slightly)
+        if (cell1.Contains(cell2, StringComparison.OrdinalIgnoreCase) ||
+            cell2.Contains(cell1, StringComparison.OrdinalIgnoreCase))
+            return true;
+            
+        // Check word-level similarity for complex cells
+        var words1 = cell1.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var words2 = cell2.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        
+        if (words1.Length == 0 && words2.Length == 0)
+            return true;
+            
+        var commonWords = words1.Intersect(words2, StringComparer.OrdinalIgnoreCase).Count();
+        var totalWords = words1.Union(words2, StringComparer.OrdinalIgnoreCase).Count();
+        
+        return totalWords > 0 && (double)commonWords / totalWords >= 0.8;
+    }
 
     private static List<string> ExtractListItems(string listContent)
     {
@@ -846,16 +1718,106 @@ public class ConversionAccuracyTest
 
     private static string CleanMarkdownForComparison(string text)
     {
-        // Markdownの書式設定記号を除去
+        // Markdownの書式設定記号を除去（ただしテーブル構造は保持）
         return text.Replace("#", "")
                   .Replace("*", "")
                   .Replace("_", "")
                   .Replace("`", "")
-                  .Replace("|", "")
-                  .Replace("-", "")
                   .Replace(">", "")
                   .Replace("•", "")
                   .Trim();
+    }
+    
+    private static bool HasTableCorruption(string tableContent)
+    {
+        // Check for common corruption patterns
+        var corruptionPatterns = new[]
+        {
+            @"<br>\d+",           // HTML break tags with numbers
+            @"\d+<br>",           // Numbers followed by HTML break tags  
+            @"[A-Za-z]+\d+[A-Za-z]+", // Words merged with numbers
+            @"\|\s*\|\s*\|",     // Empty table cells in sequence
+            @"[^\s]\s*\|\s*[^\s]", // Check for proper cell separation
+        };
+        
+        foreach (var pattern in corruptionPatterns)
+        {
+            if (Regex.IsMatch(tableContent, pattern))
+            {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private static string GetCorruptionDetails(string tableContent)
+    {
+        var details = new List<string>();
+        
+        if (Regex.IsMatch(tableContent, @"<br>\d+"))
+            details.Add("HTML break tags with numbers detected");
+            
+        if (Regex.IsMatch(tableContent, @"[A-Za-z]+\d+[A-Za-z]+"))
+            details.Add("Text merged with numbers");
+            
+        if (Regex.IsMatch(tableContent, @"\|\s*\|\s*\|"))
+            details.Add("Multiple empty cells");
+            
+        return details.Count > 0 ? string.Join(", ", details) : "Unknown corruption";
+    }
+    
+    private static bool HasValidTableStructure(string tableContent)
+    {
+        var lines = tableContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length < 2) return false;
+        
+        // Check if there's a separator row with proper markdown table alignment syntax
+        bool hasSeparator = lines.Any(line => IsSeparatorRow(line));
+        if (!hasSeparator) return false;
+        
+        // Get table rows (excluding separator rows)
+        var dataRows = lines.Where(line => line.Contains('|') && !IsSeparatorRow(line))
+                           .Select(line => NormalizeTableRow(line))
+                           .ToList();
+        
+        if (dataRows.Count < 1) return false;
+        
+        // Check column count consistency for data rows
+        var columnCounts = dataRows.Select(row => CountTableColumns(row)).ToList();
+        
+        if (columnCounts.Count == 0) return false;
+        
+        var minColumns = columnCounts.Min();
+        var maxColumns = columnCounts.Max();
+        
+        // Allow some variation in column count for formatting differences
+        return (maxColumns - minColumns) <= 1 && minColumns >= 1;
+    }
+    
+    private static int CountTableColumns(string normalizedRow)
+    {
+        // Count cells by splitting on pipes and excluding empty cells at start/end
+        var parts = normalizedRow.Split('|');
+        
+        // Remove empty parts at beginning and end (from leading/trailing pipes)
+        var cells = parts.Skip(parts[0] == "" ? 1 : 0)
+                        .Take(parts[parts.Length - 1] == "" ? parts.Length - (parts[0] == "" ? 2 : 1) : parts.Length - (parts[0] == "" ? 1 : 0))
+                        .ToList();
+        
+        return Math.Max(1, cells.Count);
+    }
+    
+    private static string NormalizeTableRow(string row)
+    {
+        // Remove leading/trailing whitespace and normalize pipe characters
+        var normalized = row.Trim();
+        
+        // Ensure the row starts and ends with pipes for consistent parsing
+        if (!normalized.StartsWith('|')) normalized = "|" + normalized;
+        if (!normalized.EndsWith('|')) normalized = normalized + "|";
+        
+        return normalized;
     }
 
 }
