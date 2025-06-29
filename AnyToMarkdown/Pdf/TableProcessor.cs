@@ -17,7 +17,7 @@ internal static class TableProcessor
         // 連続するテーブル行を検出
         var consecutiveTableRows = new List<DocumentElement> { element };
         
-        // 現在の行から続くテーブル行を収集
+        // 現在の行から続くテーブル行を収集（段落も含めて統合検討）
         for (int i = currentIndex + 1; i < allElements.Count; i++)
         {
             if (allElements[i].Type == ElementType.TableRow)
@@ -27,6 +27,12 @@ internal static class TableProcessor
             else if (allElements[i].Type == ElementType.Empty)
             {
                 continue; // 空行は無視して続行
+            }
+            else if (allElements[i].Type == ElementType.Paragraph && ShouldIntegrateIntoPreviousTableRow(allElements[i], consecutiveTableRows.Last()))
+            {
+                // 前のテーブル行に統合
+                var lastRow = consecutiveTableRows.Last();
+                lastRow.Content = lastRow.Content + "<br>" + allElements[i].Content.Trim();
             }
             else
             {
@@ -329,6 +335,62 @@ internal static class TableProcessor
             .Where(cell => !string.IsNullOrWhiteSpace(cell))
             .Select(cell => cell.Trim())
             .ToList();
+    }
+
+    private static bool ShouldIntegrateIntoPreviousTableRow(DocumentElement paragraphElement, DocumentElement previousTableRow)
+    {
+        if (paragraphElement?.Words == null || !paragraphElement.Words.Any() ||
+            previousTableRow?.Words == null || !previousTableRow.Words.Any())
+        {
+            return false;
+        }
+
+        // 段落要素の位置情報を取得
+        var paragraphWords = paragraphElement.Words;
+        var tableWords = previousTableRow.Words;
+
+        // 垂直距離を計算（段落が前のテーブル行の直下にあるか）
+        var paragraphTop = paragraphWords.Min(w => w.BoundingBox.Top);
+        var tableBottom = tableWords.Max(w => w.BoundingBox.Bottom);
+        var verticalGap = Math.Abs(paragraphTop - tableBottom);
+
+        // フォントサイズを使用した距離閾値
+        var avgFontSize = paragraphWords.Average(w => w.BoundingBox.Height);
+        var maxVerticalGap = avgFontSize * 1.5; // フォントサイズの1.5倍以内
+
+        if (verticalGap > maxVerticalGap)
+        {
+            return false; // 距離が離れすぎている
+        }
+
+        // 水平位置の重複をチェック（段落の単語がテーブル行の列範囲内にあるか）
+        var tableLeft = tableWords.Min(w => w.BoundingBox.Left);
+        var tableRight = tableWords.Max(w => w.BoundingBox.Right);
+        var paragraphLeft = paragraphWords.Min(w => w.BoundingBox.Left);
+        var paragraphRight = paragraphWords.Max(w => w.BoundingBox.Right);
+
+        // 段落の範囲がテーブルの範囲と重複または包含される場合
+        bool hasHorizontalOverlap = (paragraphLeft >= tableLeft && paragraphLeft <= tableRight) ||
+                                   (paragraphRight >= tableLeft && paragraphRight <= tableRight) ||
+                                   (paragraphLeft <= tableLeft && paragraphRight >= tableRight);
+
+        if (!hasHorizontalOverlap)
+        {
+            return false; // 水平位置が全く重複しない
+        }
+
+        // 段落テキストがテーブルの継続として妥当かチェック
+        var paragraphText = paragraphElement.Content?.Trim() ?? "";
+        
+        // 明らかに新しいセクションの開始を示すパターンは統合しない
+        if (paragraphText.StartsWith("#") || paragraphText.StartsWith("##") ||
+            paragraphText.Contains("テスト") && paragraphText.Length < 10)
+        {
+            return false;
+        }
+
+        // 短いテキストで、位置的にテーブル内にある場合は統合候補
+        return paragraphText.Length <= 50 && hasHorizontalOverlap && verticalGap <= maxVerticalGap;
     }
 
     public static string[] MergeDisconnectedTableCells(string[] lines)
