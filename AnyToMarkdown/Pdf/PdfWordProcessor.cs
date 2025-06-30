@@ -39,9 +39,9 @@ internal static class PdfWordProcessor
                 var wordHeight = wordTop - wordBottom;
                 var overlapRatio = wordHeight > 0 ? overlap / wordHeight : 0;
                 
-                // 重複率が高い、または距離が閾値内で最も近い行を選択（改善版）
-                var dynamicThreshold = Math.Max(yThreshold, Math.Min(lineHeight * 0.8, wordHeight * 0.8));
-                if ((overlapRatio > 0.25 || distance <= dynamicThreshold) && 
+                // テーブル行検出のためより厳格な重複基準（CLAUDE.md準拠）
+                var dynamicThreshold = Math.Max(yThreshold, Math.Min(lineHeight * 0.5, wordHeight * 0.5));
+                if ((overlapRatio > 0.4 || distance <= dynamicThreshold) && 
                     distance < bestMatch)
                 {
                     bestMatch = distance;
@@ -98,14 +98,13 @@ internal static class PdfWordProcessor
             var currentWordHeight = words[i].BoundingBox.Height;
             var lastGroupAvgHeight = lastGroup.Count > 0 ? lastGroup.Average(w => w.BoundingBox.Height) : currentWordHeight;
             
-            // 文字サイズに基づく動的な閾値調整（改善版）
-            var fontBasedThreshold = Math.Min(currentWordHeight, lastGroupAvgHeight) * 0.4;
+            // テーブルセル分離のため厳格な閾値調整（CLAUDE.md準拠）
+            var fontBasedThreshold = Math.Min(currentWordHeight, lastGroupAvgHeight) * 0.3;
             var adaptiveThreshold = Math.Max(xThreshold, fontBasedThreshold);
             
-            // 文字の重複やマイナス距離の場合は強制的に統合
-            // また、同じ単語の文字間スペースが異常に大きい場合も考慮
-            if (distance < adaptiveThreshold || distance < 0 || 
-                (distance <= fontBasedThreshold * 2 && ShouldMergeWords(lastGroup.Last(), words[i])))
+            // 文字の重複時のみ統合（テーブルセル境界を保持）
+            if (distance < 0 || 
+                (distance <= fontBasedThreshold && ShouldMergeWords(lastGroup.Last(), words[i])))
             {
                 // 近接している場合は同じグループに追加
                 lastGroup.Add(words[i]);
@@ -128,7 +127,7 @@ internal static class PdfWordProcessor
     {
         // フォントサイズと名前が似ている場合は同じ文字列の一部の可能性
         var fontSizeDiff = Math.Abs(word1.BoundingBox.Height - word2.BoundingBox.Height);
-        var fontSizeThreshold = Math.Min(word1.BoundingBox.Height, word2.BoundingBox.Height) * 0.1;
+        var fontSizeThreshold = Math.Min(word1.BoundingBox.Height, word2.BoundingBox.Height) * 0.05;
         
         var font1 = word1.FontName ?? "";
         var font2 = word2.FontName ?? "";
@@ -137,10 +136,70 @@ internal static class PdfWordProcessor
                               font1.Substring(0, Math.Min(font1.Length, 6)).Equals(
                                   font2.Substring(0, Math.Min(font2.Length, 6)), StringComparison.OrdinalIgnoreCase));
         
-        // 垂直位置も考慮
+        // 垂直位置も考慮（テーブルセル分離のため厳格化）
         var verticalDistance = Math.Abs(word1.BoundingBox.Bottom - word2.BoundingBox.Bottom);
-        var heightThreshold = Math.Max(word1.BoundingBox.Height, word2.BoundingBox.Height) * 0.3;
+        var heightThreshold = Math.Max(word1.BoundingBox.Height, word2.BoundingBox.Height) * 0.15;
+        
+        // 水平距離も考慮（テーブルセルの境界検出）
+        var horizontalGap = word2.BoundingBox.Left - word1.BoundingBox.Right;
+        var avgWidth = (word1.BoundingBox.Width + word2.BoundingBox.Width) / 2;
+        
+        // テーブルセル間のギャップが大きい場合は統合しない
+        if (horizontalGap > avgWidth * 0.5)
+        {
+            return false;
+        }
         
         return fontSizeDiff <= fontSizeThreshold && sameFontFamily && verticalDistance <= heightThreshold;
+    }
+    
+    // テーブル特化の座標ベース行検出
+    public static List<List<Word>> GroupWordsIntoTableRows(IEnumerable<Word> words, double strictYThreshold = 2.0)
+    {
+        var lines = new List<List<Word>>();
+        var sortedWords = words.OrderByDescending(w => w.BoundingBox.Bottom).ThenBy(w => w.BoundingBox.Left);
+
+        foreach (var word in sortedWords)
+        {
+            bool added = false;
+            double bestMatch = double.MaxValue;
+            int bestLineIndex = -1;
+            
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var line = lines[i];
+                var avgBottom = line.Select(x => x.BoundingBox.Bottom).Average();
+                var distance = Math.Abs(word.BoundingBox.Bottom - avgBottom);
+                
+                // テーブル行の厳格な判定（座標ベース）
+                if (distance <= strictYThreshold && distance < bestMatch)
+                {
+                    bestMatch = distance;
+                    bestLineIndex = i;
+                }
+            }
+            
+            if (bestLineIndex >= 0)
+            {
+                lines[bestLineIndex].Add(word);
+                added = true;
+            }
+
+            if (!added)
+            {
+                lines.Add([word]);
+            }
+        }
+
+        // 各行内で左から右へソート
+        for (int i = 0; i < lines.Count; i++)
+        {
+            lines[i] = [.. lines[i].OrderBy(w => w.BoundingBox.Left)];
+        }
+        
+        // 行を上から下へソート
+        lines = [.. lines.OrderByDescending(line => line.Select(w => w.BoundingBox.Bottom).Average())];
+
+        return lines;
     }
 }

@@ -47,6 +47,9 @@ internal class PdfStructureAnalyzer
         // 後処理：図形情報と連続する行の構造パターンを分析してテーブルを検出
         elements = PostProcessor.PostProcessTableDetection(elements, graphicsInfo);
         
+        // 座標ベーステーブル列アライメント（CLAUDE.md準拠）- 一時的に無効化
+        // elements = PostProcessor.PostProcessTableAlignment(elements);
+        
         documentStructure.Elements.AddRange(elements);
         documentStructure.FontAnalysis = fontAnalysis;
         return documentStructure;

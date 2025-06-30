@@ -190,8 +190,8 @@ internal static class ElementDetector
                 return true;
         }
 
-        // 座標ベースの規則的配置
-        if (words.Count >= 3)
+        // 座標ベースの規則的配置（感度向上）
+        if (words.Count >= 2) // 2つ以上の単語でも検出
         {
             var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
             var gaps = new List<double>();
@@ -202,7 +202,9 @@ internal static class ElementDetector
                 gaps.Add(gap);
             }
             
-            if (gaps.Any(g => g > 20)) // 大きなギャップがある
+            // より小さなギャップでも検出
+            var avgWordWidth = words.Average(w => w.BoundingBox.Width);
+            if (gaps.Any(g => g > avgWordWidth * 0.5)) // 単語幅の50%以上のギャップ
                 return true;
         }
 
@@ -488,13 +490,13 @@ internal static class ElementDetector
         var variance = gaps.Sum(g => Math.Pow(g - avgGap, 2)) / gaps.Count;
         var coefficient = avgGap > 0 ? Math.Sqrt(variance) / avgGap : double.MaxValue;
         
-        // 大きなギャップの存在をチェック（テーブルセルの特徴）
-        var largeGaps = gaps.Where(g => g > avgWordWidth * 0.5).ToList();
-        var hasSignificantGaps = largeGaps.Count >= gaps.Count * 0.3; // 30%以上が大きなギャップ
+        // 大きなギャップの存在をチェック（テーブルセルの特徴）（感度向上）
+        var largeGaps = gaps.Where(g => g > avgWordWidth * 0.3).ToList(); // 30%に下げる
+        var hasSignificantGaps = largeGaps.Count >= gaps.Count * 0.2; // 20%以上が大きなギャップ
         
-        // ギャップパターンの判定
-        var isRegularSpacing = coefficient < 0.6 && avgGap > 8;
-        var hasTableLikeGaps = avgGap > 15 || hasSignificantGaps;
+        // ギャップパターンの判定（閾値を下げる）
+        var isRegularSpacing = coefficient < 0.8 && avgGap > 5; // より緩い基準
+        var hasTableLikeGaps = avgGap > 10 || hasSignificantGaps; // より低い閾値
         
         return isRegularSpacing || hasTableLikeGaps;
     }
