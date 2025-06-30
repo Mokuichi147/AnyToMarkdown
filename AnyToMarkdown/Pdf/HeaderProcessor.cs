@@ -152,11 +152,10 @@ internal static class HeaderProcessor
         // 空のヘッダーは無視
         if (string.IsNullOrWhiteSpace(cleanText)) return "";
         
-        // 明確なヘッダーキーワードの場合は強制的にヘッダーにする
-        if (cleanText.Contains("テスト") || cleanText == "概要" || cleanText == "表" || 
-            cleanText.EndsWith("テスト") || cleanText.EndsWith("概要"))
+        // 既存のマークダウンヘッダーの場合はそのまま処理
+        if (cleanText.StartsWith("#"))
         {
-            return $"# {cleanText}";
+            return cleanText;
         }
         
         var level = DetermineHeaderLevel(element, fontAnalysis);

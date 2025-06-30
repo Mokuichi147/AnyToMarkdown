@@ -74,13 +74,10 @@ internal static class ElementDetector
                 if (cleanText.ToUpperInvariant() == cleanText && cleanText.Any(char.IsLetter))
                     return true;
 
-                // ヘッダー的なキーワードパターン
-                var headerKeywords = new[] { "目次", "概要", "まとめ", "結論", "はじめに", "終わりに", "参考文献", "テスト", "サンプル", "例" };
-                if (headerKeywords.Any(keyword => cleanText.Contains(keyword)))
+                // 一般的なヘッダーパターンの検出（マークダウン記号ベース）
+                if (cleanText.StartsWith("第") && cleanText.Contains("章"))
                     return true;
-                    
-                // 「〜テスト」パターンの検出
-                if (cleanText.EndsWith("テスト") && cleanText.Length <= 20)
+                if (cleanText.StartsWith("第") && cleanText.Contains("節"))
                     return true;
 
                 // 章・節パターン
@@ -234,8 +231,8 @@ internal static class ElementDetector
             return false;
         }
         
-        // テスト関連の明示的なヘッダーパターン（短い場合のみ）
-        if (cleanText.EndsWith("テスト") && cleanText.Length <= 12 && !cleanText.Contains("です"))
+        // 明示的なマークダウンヘッダーパターン
+        if (cleanText.StartsWith("#"))
             return true;
         
         // 長い文章（15文字以上）は段落の可能性が高い

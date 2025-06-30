@@ -382,9 +382,8 @@ internal static class TableProcessor
         // 段落テキストがテーブルの継続として妥当かチェック
         var paragraphText = paragraphElement.Content?.Trim() ?? "";
         
-        // 明らかに新しいセクションの開始を示すパターンは統合しない
-        if (paragraphText.StartsWith("#") || paragraphText.StartsWith("##") ||
-            paragraphText.Contains("テスト") && paragraphText.Length < 10)
+        // マークダウンヘッダー記号で始まる場合は統合しない
+        if (paragraphText.StartsWith("#"))
         {
             return false;
         }

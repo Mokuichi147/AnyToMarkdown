@@ -74,16 +74,8 @@ internal static class PostProcessor
                                         content.Contains("マークダウン") || content.Contains("と斜体") ||
                                         content.Length > 15;
                                         
-                // ヘッダーキーワードで終わる場合は段落パターンから除外（但し短い場合のみ）
-                if ((content.EndsWith("テスト") || content.EndsWith("サンプル") || 
-                    content.EndsWith("例") || content.EndsWith("概要")) && content.Length <= 12)
-                {
-                    isParagraphPattern = false;
-                }
-                
-                // 強制的にヘッダーとする特定のキーワード（短いテキストのみ）
-                if ((content == "概要" || content == "表" || content.Contains("テーブルテスト") ||
-                    content.Contains("基本的な") || content.Contains("空欄を含む")) && content.Length <= 20)
+                // マークダウン記号で始まる場合はヘッダーとして処理
+                if (content.StartsWith("#"))
                 {
                     element.Type = ElementType.Header;
                 }
