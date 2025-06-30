@@ -455,61 +455,7 @@ public class ConversionAccuracyTest
             return details;
         }
     }
-
-    private (bool Passed, string Details) EvaluateMarkdownFormattingAsTest(MarkdownStructureAnalysis analysis)
-    {
-        string originalContent = string.Join("\n", analysis.OriginalSections);
-        string convertedContent = string.Join("\n", analysis.ConvertedSections);
-
-        int formattingTests = 0;
-        int preservedFormatting = 0;
-
-        // 太字の保持確認 - 厳格な基準
-        var boldMatches = Regex.Matches(originalContent, @"\*\*([^*]+)\*\*");
-        if (boldMatches.Count > 0)
-        {
-            formattingTests++;
-            // 厳格な基準: 太字がMarkdown記法として保持されているか、または視覚的に強調されているか
-            bool boldPreserved = convertedContent.Contains("**") || // Markdown形式で保持
-                                boldMatches.Cast<Match>()
-                                .All(match => convertedContent.Contains(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
-            
-            if (boldPreserved) preservedFormatting++;
-        }
-
-        // 斜体の保持確認 - 厳格な基準
-        var italicMatches = Regex.Matches(originalContent, @"(?<!\*)\*([^*]+)\*(?!\*)");
-        if (italicMatches.Count > 0)
-        {
-            formattingTests++;
-            bool italicPreserved = convertedContent.Contains("*") || // Markdown形式で保持
-                                 italicMatches.Cast<Match>()
-                                 .All(match => convertedContent.Contains(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
-            
-            if (italicPreserved) preservedFormatting++;
-        }
-
-        // コードの保持確認 - 厳格な基準
-        var codeMatches = Regex.Matches(originalContent, @"`([^`]+)`");
-        if (codeMatches.Count > 0)
-        {
-            formattingTests++;
-            bool codePreserved = convertedContent.Contains("`") || // Markdown形式で保持
-                               codeMatches.Cast<Match>()
-                               .All(match => convertedContent.Contains(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
-            
-            if (codePreserved) preservedFormatting++;
-        }
-
-        if (formattingTests == 0)
-            return (true, "No formatting to validate");
-
-        // 厳格な基準: すべての書式タイプが保持されていること
-        bool passed = preservedFormatting == formattingTests;
-        string details = $"{preservedFormatting}/{formattingTests} formatting types fully preserved";
-        
-        return (passed, details);
-    }
+    
 
     private static (bool Passed, string Details) EvaluateEmphasisAsTest(MarkdownStructureAnalysis analysis)
     {
@@ -791,33 +737,6 @@ public class ConversionAccuracyTest
         return (passed, details);
     }
     
-    private static double CalculateCodeSimilarity(string original, string converted)
-    {
-        if (string.IsNullOrWhiteSpace(original) && string.IsNullOrWhiteSpace(converted))
-            return 1.0;
-            
-        if (string.IsNullOrWhiteSpace(original) || string.IsNullOrWhiteSpace(converted))
-            return 0.0;
-            
-        // Normalize whitespace and compare
-        var normalizedOriginal = Regex.Replace(original.Trim(), @"\s+", " ");
-        var normalizedConverted = Regex.Replace(converted.Trim(), @"\s+", " ");
-        
-        if (normalizedOriginal.Equals(normalizedConverted, StringComparison.OrdinalIgnoreCase))
-            return 1.0;
-            
-        // Check if converted contains most of the original content
-        var originalWords = normalizedOriginal.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var convertedWords = normalizedConverted.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        
-        if (originalWords.Length == 0)
-            return convertedWords.Length == 0 ? 1.0 : 0.0;
-            
-        var matchingWords = originalWords.Count(word => 
-            convertedWords.Any(cw => cw.Equals(word, StringComparison.OrdinalIgnoreCase)));
-            
-        return (double)matchingWords / originalWords.Length;
-    }
 
     private static (bool Passed, string Details) EvaluateQuotesAsTest(MarkdownStructureAnalysis analysis)
     {
@@ -825,10 +744,10 @@ public class ConversionAccuracyTest
         string convertedContent = string.Join("\n", analysis.ConvertedSections);
 
         var quoteAnalysis = AnalyzeQuoteStructure(originalContent, convertedContent);
-        
+
         bool passed = quoteAnalysis.StructurePreserved && !quoteAnalysis.HasCorruption;
         string details = quoteAnalysis.GenerateDetails();
-        
+
         return (passed, details);
     }
 
