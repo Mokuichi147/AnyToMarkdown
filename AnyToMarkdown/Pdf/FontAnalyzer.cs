@@ -20,7 +20,7 @@ internal static class FontAnalyzer
         }
 
         var baseFontSize = CalculateBaseFontSize(allSizes);
-        var largeFontThreshold = baseFontSize * 1.2;
+        var largeFontThreshold = CalculateLargeFontThreshold(allSizes, baseFontSize);
 
         return new FontAnalysis
         {
@@ -33,24 +33,74 @@ internal static class FontAnalyzer
     private static double CalculateBaseFontSize(List<double> allSizes)
     {
         if (allSizes.Count == 1) return allSizes[0];
+        if (allSizes.Count == 0) return 12.0;
 
-        // 最も頻繁に使用されるフォントサイズを見つける
-        var sizeGroups = allSizes
+        // 統計的アプローチ：四分位数と頻度分析を組み合わせ
+        var sortedSizes = allSizes.OrderBy(s => s).ToList();
+        
+        // 第1四分位数と第3四分位数を計算
+        var q1Index = (int)(sortedSizes.Count * 0.25);
+        var q3Index = (int)(sortedSizes.Count * 0.75);
+        var q1 = sortedSizes[q1Index];
+        var q3 = sortedSizes[q3Index];
+        
+        // IQR範囲内のサイズのみを使って基底サイズを決定（外れ値除去）
+        var iqrSizes = sortedSizes.Where(s => s >= q1 && s <= q3).ToList();
+        
+        if (iqrSizes.Count == 0)
+        {
+            // フォールバック：中央値
+            var middle = sortedSizes.Count / 2;
+            return sortedSizes.Count % 2 == 0
+                ? (sortedSizes[middle - 1] + sortedSizes[middle]) / 2.0
+                : sortedSizes[middle];
+        }
+        
+        // IQR範囲内で最頻値を計算
+        var sizeGroups = iqrSizes
             .GroupBy(s => Math.Round(s, 1))
             .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key) // 同じ頻度なら小さいサイズを優先
             .ToList();
 
-        if (sizeGroups.Count > 0)
+        return sizeGroups.First().Key;
+    }
+    
+    private static double CalculateLargeFontThreshold(List<double> allSizes, double baseFontSize)
+    {
+        if (allSizes.Count <= 1) return baseFontSize * 1.2;
+        
+        // 統計的アプローチ：大きなフォントサイズの関係を分析
+        var distinctSizes = allSizes.Distinct().OrderBy(s => s).ToList();
+        
+        // 基底サイズより大きいサイズを抽出
+        var largerSizes = distinctSizes.Where(s => s > baseFontSize).ToList();
+        
+        if (largerSizes.Count == 0)
         {
-            return sizeGroups[0].Key;
+            // 基底サイズしかない場合、僅かに大きい闾値を設定
+            return baseFontSize * 1.1;
         }
-
-        // フォールバック：中央値を使用
-        var sortedSizes = allSizes.OrderBy(s => s).ToList();
-        var middle = sortedSizes.Count / 2;
-        return sortedSizes.Count % 2 == 0
-            ? (sortedSizes[middle - 1] + sortedSizes[middle]) / 2.0
-            : sortedSizes[middle];
+        
+        // 最小の大きいサイズを闾値として使用
+        var threshold = largerSizes.First();
+        
+        // 闾値が基底サイズに近すぎる場合の調整
+        var ratio = threshold / baseFontSize;
+        if (ratio < 1.05) // 5%未満の差の場合
+        {
+            // 次に大きいサイズがあればそれを使用
+            if (largerSizes.Count > 1)
+            {
+                threshold = largerSizes[1];
+            }
+            else
+            {
+                threshold = baseFontSize * 1.15; // フォールバック
+            }
+        }
+        
+        return threshold;
     }
 
     public static FontFormatting AnalyzeFontFormatting(List<Word> words)

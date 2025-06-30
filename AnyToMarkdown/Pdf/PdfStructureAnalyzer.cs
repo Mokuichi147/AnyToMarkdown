@@ -190,12 +190,12 @@ internal class PdfStructureAnalyzer
         bool isLargeFont = maxFontSize > fontAnalysis.LargeFontThreshold;
         
         // 改善されたヘッダー検出：座標とフォントサイズベース
-        bool hasHeaderStructure = IsHeaderStructure(cleanText, words, maxFontSize, fontAnalysis);
-        bool hasHeaderContent = IsHeaderLike(cleanText);
+        bool hasHeaderStructure = ElementDetector.IsHeaderStructure(cleanText, words, maxFontSize, fontAnalysis);
+        bool hasHeaderContent = ElementDetector.IsHeaderLike(cleanText);
         bool isShortText = cleanText.Length <= 20; // 短いテキストはヘッダーの可能性が高い
         
         // ヘッダー判定の優先処理
-        if (hasHeaderStructure && !IsLikelyTableContent(cleanText, words))
+        if (hasHeaderStructure && !ElementDetector.IsLikelyTableContent(cleanText, words))
         {
             return ElementType.Header;
         }
@@ -226,12 +226,7 @@ internal class PdfStructureAnalyzer
             return ElementType.Paragraph;
             
         
-        // テーブル要素の可能性をチェック
-        bool likelyTableContent = IsLikelyTableContent(cleanText, words);
-        if (likelyTableContent)
-            return ElementType.TableRow;
-        
-        // 強力なヘッダー判定条件
+        // 強力なヘッダー判定条件（テーブル判定より優先）
         if ((isLargeFont && hasHeaderContent) || 
             (isLargeFont && isShortText && !cleanText.Contains("|")) ||
             (hasHeaderContent && text.Contains("**") && cleanText.Length <= 15))
@@ -239,29 +234,40 @@ internal class PdfStructureAnalyzer
             return ElementType.Header;
         }
         
+        // 短いテキストで単独行の場合はヘッダーの可能性が高い
+        if (cleanText.Length <= 20 && !cleanText.Contains("|") && isLargeFont)
+        {
+            return ElementType.Header;
+        }
+        
+        // テーブル要素の可能性をチェック（ヘッダー判定後）
+        bool likelyTableContent = ElementDetector.IsLikelyTableContent(cleanText, words);
+        if (likelyTableContent)
+            return ElementType.TableRow;
+        
         // 太字フォーマットを含む数字パターンを最優先でヘッダーとして扱う
-        if (HasBoldNumberPattern(text))
+        if (ElementDetector.HasBoldNumberPattern(text))
         {
             return ElementType.Header;
         }
         
         // 太字テキストで短い行の場合はヘッダーとして扱う
-        if (IsPotentialBoldHeader(text))
+        if (ElementDetector.IsPotentialBoldHeader(text))
         {
             return ElementType.Header;
         }
 
         // コードブロックの判定（モノスペースフォントやインデント）
-        if (IsCodeBlockLike(cleanText, words, fontAnalysis)) return ElementType.CodeBlock;
+        if (ElementDetector.IsCodeBlockLike(cleanText, words, fontAnalysis)) return ElementType.CodeBlock;
         
         // 引用ブロックの判定
-        if (IsQuoteBlockLike(cleanText)) return ElementType.QuoteBlock;
+        if (ElementDetector.IsQuoteBlockLike(cleanText)) return ElementType.QuoteBlock;
 
         // リストアイテムの判定を最優先（数字付きリストを含む）
-        if (IsListItemLike(cleanText)) return ElementType.ListItem;
+        if (ElementDetector.IsListItemLike(cleanText)) return ElementType.ListItem;
 
         // テーブル行の判定（座標とギャップベース）- ヘッダー判定より先に実行
-        if (IsTableRowLike(cleanText, words)) return ElementType.TableRow;
+        if (ElementDetector.IsTableRowLike(cleanText, words)) return ElementType.TableRow;
 
         // フォントサイズベースのヘッダー判定（改良版）
         var fontSizeRatio = maxFontSize / fontAnalysis.BaseFontSize;

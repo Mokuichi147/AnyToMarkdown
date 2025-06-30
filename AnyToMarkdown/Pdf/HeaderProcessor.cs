@@ -44,12 +44,19 @@ internal static class HeaderProcessor
         var maxFontSize = allSizes.Count > 0 ? allSizes[0] : element.FontSize;
         var relativeRatio = element.FontSize / maxFontSize;
         
-        // 相対的なサイズに基づいたレベル判定（より柔軟に）
-        if (relativeRatio >= 0.95 || baseFontRatio >= 1.6) return 1;   // 最大または非常に大きい
-        if (relativeRatio >= 0.85 || baseFontRatio >= 1.4) return 2;   // 大きい
-        if (relativeRatio >= 0.75 || baseFontRatio >= 1.25) return 3;  // 中程度
-        if (relativeRatio >= 0.65 || baseFontRatio >= 1.15) return 4;  // やや大きい
-        if (relativeRatio >= 0.55 || baseFontRatio >= 1.05) return 5;  // 少し大きい
+        // LargeFontThresholdを基準とした統計的レベル判定
+        var largeFontRatio = element.FontSize / fontAnalysis.LargeFontThreshold;
+        
+        if (largeFontRatio >= 1.8) return 1;   // 非常に大きい
+        if (largeFontRatio >= 1.4) return 2;   // 大きい
+        if (largeFontRatio >= 1.1) return 3;   // 中程度
+        if (largeFontRatio >= 1.0) return 4;   // LargeFontThreshold以上
+        if (baseFontRatio >= 1.05) return 5;   // 基底サイズより少し大きい
+        
+        // フォールバック：相対的サイズ判定
+        if (relativeRatio >= 0.95) return 1;
+        if (relativeRatio >= 0.85) return 2;
+        if (relativeRatio >= 0.75) return 3;
         
         // デフォルトで3レベルを返す（6は使わない）
         return 3;

@@ -216,27 +216,24 @@ internal static class ElementDetector
 
         var cleanText = text.Trim();
 
-        // フォントサイズベースの判定（より厳格に）
+        // 明示的なマークダウンヘッダーパターン（最優先）
+        if (cleanText.StartsWith("#"))
+            return true;
+
+        // フォントサイズベースの判定
         var fontSizeRatio = fontSize / fontAnalysis.BaseFontSize;
         
-        // 明らかに段落的なテキストパターンを除外（最優先）
+        // 明らかに段落的なテキストパターンを除外
         if (cleanText.EndsWith("。") || cleanText.EndsWith("です。") || cleanText.EndsWith("ます。") ||
             cleanText.EndsWith(".") || cleanText.Contains("、") || cleanText.Contains(",") ||
             cleanText.StartsWith("これは") || cleanText.StartsWith("それは") || 
-            cleanText.StartsWith("この") || cleanText.StartsWith("その") ||
-            cleanText.Contains("テストです") || cleanText.Contains("マークダウン") ||
-            cleanText.Contains("基本的な") || cleanText.Contains("と斜体") ||
-            cleanText.Contains("文字のテスト"))
+            cleanText.StartsWith("この") || cleanText.StartsWith("その"))
         {
             return false;
         }
         
-        // 明示的なマークダウンヘッダーパターン
-        if (cleanText.StartsWith("#"))
-            return true;
-        
-        // 長い文章（15文字以上）は段落の可能性が高い
-        if (cleanText.Length > 15)
+        // 長い文章（30文字以上）は段落の可能性が高い（閾値を緩和）
+        if (cleanText.Length > 30)
         {
             return false;
         }
@@ -254,23 +251,37 @@ internal static class ElementDetector
             return false;
         }
         
-        // 大きなフォントでヘッダーとする（適度に調整）
-        if (fontSizeRatio >= 1.25)
+        // 統計的フォントサイズ分析によるヘッダー判定（閾値を緩和）
+        var largeFontRatio = fontSize / fontAnalysis.LargeFontThreshold;
+        if (largeFontRatio >= 0.95) // LargeFontThreshold以上のサイズ（閾値緩和）
         {
-            if (cleanText.Length <= 35)
+            if (cleanText.Length <= 80) // 文字数制限を大幅緩和
+                return true;
+        }
+        
+        // より小さいフォントでも座標とテキスト長の組み合わせで判定（閾値緩和）
+        if (fontSizeRatio >= 1.02) // 基底サイズより2%以上大きい（閾値緩和）
+        {
+            if (cleanText.Length <= 25) // 短いテキストなら許可（緩和）
                 return true;
         }
 
-        // 座標ベースの判定（より保守的に）
+        // 座標ベース判定の強化（統計的位置分析）
         var leftPosition = words.Min(w => w.BoundingBox.Left);
-        if (leftPosition <= 40.0 && cleanText.Length <= 25 && fontSizeRatio >= 1.15)
+        var rightPosition = words.Max(w => w.BoundingBox.Right);
+        var textWidth = rightPosition - leftPosition;
+        
+        // 左端配置で短いテキストの判定（閾値緩和）
+        if (leftPosition <= 80.0 && cleanText.Length <= 50) // より寛容に
         {
-            // 典型的な段落開始パターンを除外
-            if (cleanText.StartsWith("これは") || cleanText.StartsWith("それは") || 
-                cleanText.StartsWith("この") || cleanText.StartsWith("その"))
+            // 文の終端記号で終わるテキストは段落
+            if (cleanText.EndsWith("。") || cleanText.EndsWith(".") || 
+                cleanText.EndsWith("！") || cleanText.EndsWith("?"))
                 return false;
-                
-            return true;
+            
+            // フォントサイズが基底サイズ以上ならヘッダー候補（閾値緩和）
+            if (fontSizeRatio >= 0.98) // より寛容に
+                return true;
         }
 
         // 強いヘッダーパターン
@@ -279,16 +290,20 @@ internal static class ElementDetector
 
         // フォント分析による判定
         var hasBoldFont = words.Any(w => w.FontName?.ToLowerInvariant().Contains("bold") == true);
-        if (hasBoldFont && cleanText.Length <= 100)
+        if (hasBoldFont && cleanText.Length <= 120) // より寛容に
             return true;
 
         // 単語数による判定（保守的に）
         var wordCount = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Length;
-        if (wordCount <= 5 && fontSizeRatio >= 1.15)
+        if (wordCount <= 8 && fontSizeRatio >= 1.1) // より寛容に
             return true;
             
-        // 短いテキストで明らかなヘッダーパターン（より慎重に）
-        if (cleanText.Length <= 8 && fontSizeRatio >= 1.2)
+        // 非常に短いテキストで相対的に大きなフォント
+        if (cleanText.Length <= 12 && fontSizeRatio >= 1.05) // より寛容に
+            return true;
+            
+        // テキスト幅が狭く独立している場合（レイアウト分析）
+        if (textWidth <= 200.0 && cleanText.Length <= 30 && fontSizeRatio >= 0.95) // より寛容に
             return true;
 
         return false;
@@ -403,13 +418,41 @@ internal static class ElementDetector
         if (words == null || words.Count < 2)
             return false;
 
+        // 数値パターンの統計的分析
         var numericWords = words.Where(w => 
-            System.Text.RegularExpressions.Regex.IsMatch(w.Text, @"^\d+(\.\d+)?$")).ToList();
-
-        // 数値の単語が多い場合
-        if (numericWords.Count >= 2 && numericWords.Count >= words.Count * 0.4)
+            System.Text.RegularExpressions.Regex.IsMatch(w.Text?.Trim() ?? "", @"^\d+(\.\d+)?$")).ToList();
+        var mixedWords = words.Where(w => 
+            System.Text.RegularExpressions.Regex.IsMatch(w.Text?.Trim() ?? "", @"\d")).ToList();
+        
+        var numericRatio = (double)numericWords.Count / words.Count;
+        var mixedRatio = (double)mixedWords.Count / words.Count;
+        
+        // 純粋な数値が多い場合
+        if (numericWords.Count >= 2 && numericRatio >= 0.4)
+            return true;
+            
+        // 数値を含む単語が多く、ギャップがある場合
+        if (mixedWords.Count >= 3 && mixedRatio >= 0.5 && HasSignificantGaps(words))
             return true;
 
+        return false;
+    }
+    
+    private static bool HasSignificantGaps(List<Word> words)
+    {
+        if (words == null || words.Count < 2)
+            return false;
+            
+        var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
+        var avgWordWidth = sortedWords.Average(w => w.BoundingBox.Width);
+        
+        for (int i = 0; i < sortedWords.Count - 1; i++)
+        {
+            var gap = sortedWords[i + 1].BoundingBox.Left - sortedWords[i].BoundingBox.Right;
+            if (gap > avgWordWidth * 0.5) // 単語幅の50%以上のギャップ
+                return true;
+        }
+        
         return false;
     }
 
@@ -420,23 +463,40 @@ internal static class ElementDetector
 
         var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
         var gaps = new List<double>();
+        var wordWidths = new List<double>();
 
         for (int i = 0; i < sortedWords.Count - 1; i++)
         {
             var gap = sortedWords[i + 1].BoundingBox.Left - sortedWords[i].BoundingBox.Right;
             gaps.Add(gap);
         }
+        
+        for (int i = 0; i < sortedWords.Count; i++)
+        {
+            var width = sortedWords[i].BoundingBox.Width;
+            wordWidths.Add(width);
+        }
 
         if (!gaps.Any())
             return false;
 
-        // ギャップの規則性をチェック
+        // 統計的ギャップ分析
         var avgGap = gaps.Average();
+        var avgWordWidth = wordWidths.Average();
+        
+        // ギャップの変動係数を計算
         var variance = gaps.Sum(g => Math.Pow(g - avgGap, 2)) / gaps.Count;
-        var coefficient = Math.Sqrt(variance) / avgGap;
-
-        // 規則的なスペーシング（変動係数が小さい）
-        return coefficient < 0.5 && avgGap > 10;
+        var coefficient = avgGap > 0 ? Math.Sqrt(variance) / avgGap : double.MaxValue;
+        
+        // 大きなギャップの存在をチェック（テーブルセルの特徴）
+        var largeGaps = gaps.Where(g => g > avgWordWidth * 0.5).ToList();
+        var hasSignificantGaps = largeGaps.Count >= gaps.Count * 0.3; // 30%以上が大きなギャップ
+        
+        // ギャップパターンの判定
+        var isRegularSpacing = coefficient < 0.6 && avgGap > 8;
+        var hasTableLikeGaps = avgGap > 15 || hasSignificantGaps;
+        
+        return isRegularSpacing || hasTableLikeGaps;
     }
 
     private static bool HasTableLikeTextPattern(string text)

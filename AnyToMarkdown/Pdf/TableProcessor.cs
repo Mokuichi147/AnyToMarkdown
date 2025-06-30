@@ -43,7 +43,7 @@ internal static class TableProcessor
         // 複数のテーブル行がある場合、Markdownテーブルを生成
         if (consecutiveTableRows.Count > 1)
         {
-            return GenerateMarkdownTable(consecutiveTableRows);
+            return GenerateMarkdownTableWithHeaders(consecutiveTableRows);
         }
         
         // 単一行の場合は通常の行として処理
@@ -445,6 +445,95 @@ internal static class TableProcessor
         }
         
         return result.ToArray();
+    }
+    
+    public static string GenerateMarkdownTableWithHeaders(List<DocumentElement> tableRows)
+    {
+        if (tableRows.Count == 0) return "";
+        
+        var result = new StringBuilder();
+        
+        // 最初の行でヘッダー候補をチェック
+        var firstRow = tableRows[0];
+        
+        // "テーブルテスト"のようなヘッダーテキストが含まれている場合
+        if (ContainsHeaderText(firstRow.Content))
+        {
+            // ヘッダーテキストを抽出してMarkdownヘッダーとして出力
+            var headerText = ExtractHeaderFromTableRow(firstRow.Content);
+            if (!string.IsNullOrWhiteSpace(headerText))
+            {
+                result.AppendLine($"# {headerText}");
+                result.AppendLine();
+            }
+            
+            // 残りの行でテーブルを生成
+            var remainingRows = ExtractTableRowsOnly(tableRows);
+            if (remainingRows.Count > 0)
+            {
+                result.Append(GenerateMarkdownTable(remainingRows));
+            }
+        }
+        else
+        {
+            // 通常のテーブル処理
+            result.Append(GenerateMarkdownTable(tableRows));
+        }
+        
+        return result.ToString();
+    }
+    
+    private static bool ContainsHeaderText(string content)
+    {
+        // ヘッダーテキストの特徴を検出
+        var lines = content.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0) return false;
+        
+        var firstLine = lines[0].Trim();
+        
+        // 短いテキストで、テーブル区切り文字を含まない場合はヘッダー候補
+        return firstLine.Length <= 20 && 
+               !firstLine.Contains("|") && 
+               !string.IsNullOrWhiteSpace(firstLine) &&
+               lines.Length > 1; // 複数行がある場合
+    }
+    
+    private static string ExtractHeaderFromTableRow(string content)
+    {
+        var lines = content.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        return lines.Length > 0 ? lines[0].Trim() : "";
+    }
+    
+    private static List<DocumentElement> ExtractTableRowsOnly(List<DocumentElement> tableRows)
+    {
+        var result = new List<DocumentElement>();
+        
+        foreach (var row in tableRows)
+        {
+            var lines = row.Content.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length > 1)
+            {
+                // 最初の行（ヘッダー）を除外して残りを結合
+                var tableContent = string.Join("\n", lines.Skip(1).ToArray());
+                if (!string.IsNullOrWhiteSpace(tableContent))
+                {
+                    result.Add(new DocumentElement
+                    {
+                        Type = ElementType.TableRow,
+                        Content = tableContent,
+                        FontSize = row.FontSize,
+                        LeftMargin = row.LeftMargin,
+                        Words = row.Words
+                    });
+                }
+            }
+            else
+            {
+                result.Add(row);
+            }
+        }
+        
+        return result;
     }
 }
 
