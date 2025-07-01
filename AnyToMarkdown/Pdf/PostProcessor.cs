@@ -1,4 +1,3 @@
-using System.Linq;
 using UglyToad.PdfPig.Content;
 
 namespace AnyToMarkdown.Pdf;
@@ -884,64 +883,6 @@ internal static class PostProcessor
         Center,
         Right
     }
-    
-    private static bool ShouldMergeIntoTableCell(DocumentElement tableRow, DocumentElement paragraph)
-    {
-        var paragraphText = paragraph.Content.Trim();
-        
-        // 空の段落は統合しない
-        if (string.IsNullOrWhiteSpace(paragraphText))
-        {
-            return false;
-        }
-        
-        // 段落が短く、テーブル行の続きと思われる場合
-        if (paragraphText.Length < 100 && !paragraphText.Contains("|"))
-        {
-            // 段落がテーブル行に近い位置にある
-            if (Math.Abs(tableRow.LeftMargin - paragraph.LeftMargin) < 30.0)
-            {
-                return true;
-            }
-        }
-        
-        // 段落が明らかに独立した内容でない場合（句読点で終わらない）
-        if (!paragraphText.EndsWith("。") && !paragraphText.EndsWith(".") && 
-            !paragraphText.EndsWith("！") && !paragraphText.EndsWith("!") &&
-            paragraphText.Length < 50)
-        {
-            return true;
-        }
-        
-        return false;
-    }
-
-    private static bool ShouldMergeParagraphs(DocumentElement previous, DocumentElement current)
-    {
-        if (previous == null || current == null)
-            return false;
-
-        // フォントサイズが似ている
-        if (Math.Abs(previous.FontSize - current.FontSize) > 2.0)
-            return false;
-
-        // 左マージンが似ている
-        if (Math.Abs(previous.LeftMargin - current.LeftMargin) > 10.0)
-            return false;
-
-        // 両方とも短いテキスト（継続の可能性）
-        if (previous.Content.Trim().Length < 50 && current.Content.Trim().Length < 50)
-            return true;
-
-        // 前の段落が文で終わっていない（継続の可能性）
-        var prevContent = previous.Content.Trim();
-        if (!prevContent.EndsWith(".") && !prevContent.EndsWith("。") && 
-            !prevContent.EndsWith("!") && !prevContent.EndsWith("！") &&
-            !prevContent.EndsWith("?") && !prevContent.EndsWith("？"))
-            return true;
-
-        return false;
-    }
 
     private static bool IsDefinitelyHeader(DocumentElement current, DocumentElement? previous, DocumentElement? next, FontAnalysis fontAnalysis)
     {
@@ -1322,49 +1263,6 @@ internal static class PostProcessor
         return result;
     }
     
-    public static List<DocumentElement> PostProcessTableAlignment(List<DocumentElement> elements)
-    {
-        var result = new List<DocumentElement>();
-        var currentTableGroup = new List<DocumentElement>();
-        
-        foreach (var element in elements)
-        {
-            if (element.Type == ElementType.TableRow)
-            {
-                currentTableGroup.Add(element);
-            }
-            else
-            {
-                // 現在のテーブルグループを処理
-                if (currentTableGroup.Count > 1)
-                {
-                    var alignedTable = TableProcessor.AlignTableCellsAcrossRows(currentTableGroup);
-                    result.AddRange(alignedTable);
-                }
-                else if (currentTableGroup.Count == 1)
-                {
-                    result.AddRange(currentTableGroup);
-                }
-                
-                currentTableGroup.Clear();
-                result.Add(element);
-            }
-        }
-        
-        // 最後のテーブルグループを処理
-        if (currentTableGroup.Count > 1)
-        {
-            var alignedTable = TableProcessor.AlignTableCellsAcrossRows(currentTableGroup);
-            result.AddRange(alignedTable);
-        }
-        else if (currentTableGroup.Count == 1)
-        {
-            result.AddRange(currentTableGroup);
-        }
-        
-        return result;
-    }
-    
     private static DocumentElement MergeCodeBlocks(List<DocumentElement> codeBlocks)
     {
         var mergedContent = string.Join("\n", codeBlocks.Select(cb => cb.Content));
@@ -1401,50 +1299,4 @@ public class TableRegion
     public List<DocumentElement> Elements { get; set; } = new List<DocumentElement>();
     public TablePattern? Pattern { get; set; }
     public UglyToad.PdfPig.Core.PdfRectangle BoundingArea { get; set; }
-    
-    public bool Contains(DocumentElement element)
-    {
-        if (element?.Words == null || !element.Words.Any())
-            return false;
-
-        var elementMinX = element.Words.Min(w => w.BoundingBox.Left);
-        var elementMaxX = element.Words.Max(w => w.BoundingBox.Right);
-        var elementMinY = element.Words.Min(w => w.BoundingBox.Bottom);
-        var elementMaxY = element.Words.Max(w => w.BoundingBox.Top);
-
-        return elementMinX >= BoundingArea.Left && elementMaxX <= BoundingArea.Right &&
-               elementMinY >= BoundingArea.Bottom && elementMaxY <= BoundingArea.Top;
-    }
-}
-
-public class HeaderCoordinateAnalysis
-{
-    public double AverageLeftMargin { get; set; }
-    public double VerticalSpacing { get; set; }
-    public List<double> FontSizes { get; set; } = new List<double>();
-    public List<HeaderLevelInfo> CoordinateLevels { get; set; } = new List<HeaderLevelInfo>();
-}
-
-public class HeaderLevelInfo
-{
-    public int Level { get; set; }
-    public double FontSize { get; set; }
-    public double LeftMargin { get; set; }
-    public string Pattern { get; set; } = "";
-    public double Coordinate { get; set; }
-    public int Count { get; set; }
-    public double AvgFontSize { get; set; }
-    public double Consistency { get; set; }
-}
-
-public class HeaderCandidate
-{
-    public DocumentElement Element { get; set; } = null!;
-    public int SuggestedLevel { get; set; }
-    public double Confidence { get; set; }
-    public string Reason { get; set; } = "";
-    public double LeftPosition { get; set; }
-    public double FontSize { get; set; }
-    public double FontSizeRatio { get; set; }
-    public bool IsCurrentlyHeader { get; set; }
 }

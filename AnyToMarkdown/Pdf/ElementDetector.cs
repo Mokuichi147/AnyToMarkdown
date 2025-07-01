@@ -1,4 +1,3 @@
-using System.Linq;
 using UglyToad.PdfPig.Content;
 
 namespace AnyToMarkdown.Pdf;
@@ -181,7 +180,7 @@ internal static class ElementDetector
             return true;
 
         // 短い単語の配列（3つ以上）
-        var wordList = cleanText.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        var wordList = cleanText.Split([' '], StringSplitOptions.RemoveEmptyEntries);
         if (wordList.Length >= 3)
         {
             var allShort = wordList.All(w => w.Length <= 20);
@@ -524,7 +523,7 @@ internal static class ElementDetector
         
         if (hasNumbers && hasLetters)
         {
-            var words = text.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            var words = text.Split([' '], StringSplitOptions.RemoveEmptyEntries);
             if (words.Length >= 3)
                 return true;
         }

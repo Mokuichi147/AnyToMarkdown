@@ -1,5 +1,3 @@
-using System.Linq;
-using System.Text;
 using UglyToad.PdfPig.Content;
 
 namespace AnyToMarkdown.Pdf;
@@ -195,72 +193,6 @@ internal static class LineAnalyzer
         return false;
     }
 
-    private static string BuildFormattedText(List<List<Word>> mergedWords)
-    {
-        if (mergedWords == null || mergedWords.Count == 0)
-            return "";
-
-        var result = new StringBuilder();
-        
-        for (int i = 0; i < mergedWords.Count; i++)
-        {
-            var wordGroup = mergedWords[i];
-            var groupResult = BuildFormattedWordGroup(wordGroup);
-            
-            if (!string.IsNullOrEmpty(groupResult))
-            {
-                if (result.Length > 0)
-                    result.Append(" ");
-                result.Append(groupResult);
-            }
-        }
-        
-        return result.ToString();
-    }
-
-    private static string BuildFormattedWordGroup(List<Word> wordGroup)
-    {
-        if (wordGroup == null || wordGroup.Count == 0)
-            return "";
-
-        var result = new StringBuilder();
-        FontFormatting? currentFormatting = null;
-        
-        foreach (var word in wordGroup)
-        {
-            var wordText = word.Text ?? "";
-            var wordFormatting = FontAnalyzer.AnalyzeFontFormatting(new List<Word> { word });
-            
-            // フォーマットの変更を検出
-            if (currentFormatting != null && !FormattingEqual(currentFormatting, wordFormatting))
-            {
-                // 前のフォーマットを終了
-                result.Append(GetFormattingCloseTag(currentFormatting));
-            }
-            
-            // 新しいフォーマットを開始
-            if (currentFormatting == null || !FormattingEqual(currentFormatting, wordFormatting))
-            {
-                result.Append(GetFormattingOpenTag(wordFormatting));
-                currentFormatting = wordFormatting;
-            }
-            
-            result.Append(wordText);
-        }
-        
-        // 最後のフォーマットを終了
-        if (currentFormatting != null)
-        {
-            result.Append(GetFormattingCloseTag(currentFormatting));
-        }
-        
-        return result.ToString();
-    }
-
-    private static bool FormattingEqual(FontFormatting a, FontFormatting b)
-    {
-        return a.IsBold == b.IsBold && a.IsItalic == b.IsItalic;
-    }
 
     private static string BuildFormattedTextSimple(List<List<Word>> mergedWords)
     {
@@ -273,33 +205,5 @@ internal static class LineAnalyzer
             .Where(text => !string.IsNullOrEmpty(text));
 
         return string.Join(" ", textParts);
-    }
-
-    private static string GetFormattingOpenTag(FontFormatting formatting)
-    {
-        var result = "";
-        
-        if (formatting.IsBold && formatting.IsItalic)
-            result = "***";
-        else if (formatting.IsBold)
-            result = "**";
-        else if (formatting.IsItalic)
-            result = "*";
-        
-        return result;
-    }
-
-    private static string GetFormattingCloseTag(FontFormatting formatting)
-    {
-        var result = "";
-        
-        if (formatting.IsBold && formatting.IsItalic)
-            result = "***";
-        else if (formatting.IsBold)
-            result = "**";
-        else if (formatting.IsItalic)
-            result = "*";
-        
-        return result;
     }
 }

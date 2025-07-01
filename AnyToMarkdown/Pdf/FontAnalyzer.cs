@@ -1,4 +1,3 @@
-using System.Linq;
 using UglyToad.PdfPig.Content;
 
 namespace AnyToMarkdown.Pdf;

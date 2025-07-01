@@ -1,5 +1,3 @@
-using System.Linq;
-
 namespace AnyToMarkdown.Pdf;
 
 internal static class HeaderProcessor

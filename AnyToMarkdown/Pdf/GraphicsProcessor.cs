@@ -1,4 +1,3 @@
-using System.Linq;
 using UglyToad.PdfPig.Content;
 
 namespace AnyToMarkdown.Pdf;
@@ -354,7 +353,7 @@ internal static class GraphicsProcessor
         return null;
     }
     
-    private static (List<LineSegment> horizontalLines, List<LineSegment> verticalLines, List<UglyToad.PdfPig.Core.PdfRectangle> rectangles) InferTableStructureFromWordPositions(IEnumerable<UglyToad.PdfPig.Content.Word> words)
+    private static (List<LineSegment> horizontalLines, List<LineSegment> verticalLines, List<UglyToad.PdfPig.Core.PdfRectangle> rectangles) InferTableStructureFromWordPositions(IEnumerable<Word> words)
     {
         var horizontalLines = new List<LineSegment>();
         var verticalLines = new List<LineSegment>();
@@ -419,9 +418,9 @@ internal static class GraphicsProcessor
         return (horizontalLines, verticalLines, rectangles);
     }
     
-    private static List<List<UglyToad.PdfPig.Content.Word>> GroupWordsByRows(List<UglyToad.PdfPig.Content.Word> words)
+    private static List<List<Word>> GroupWordsByRows(List<Word> words)
     {
-        var groups = new List<List<UglyToad.PdfPig.Content.Word>>();
+        var groups = new List<List<Word>>();
         var tolerance = 5.0;
         
         foreach (var word in words.OrderByDescending(w => w.BoundingBox.Bottom))
@@ -441,7 +440,7 @@ internal static class GraphicsProcessor
             
             if (!placed)
             {
-                groups.Add(new List<UglyToad.PdfPig.Content.Word> { word });
+                groups.Add(new List<Word> { word });
             }
         }
         
