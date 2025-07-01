@@ -80,12 +80,27 @@ internal static class TableProcessor
         // テーブル全体の統一列境界を計算（CLAUDE.md準拠）
         var globalBoundaries = CalculateGlobalColumnBoundaries(tableRows);
         
-        // 各行のセルを統一境界で解析
+        // 各行のセルを解析（統計的分析を優先）
         foreach (var row in tableRows)
         {
-            var cells = globalBoundaries.Any() ? 
-                ParseTableCellsWithGlobalBoundaries(row, globalBoundaries) : 
-                ParseTableCells(row);
+            // 優先順位1: 統計的ギャップ分析
+            var statisticalCells = ParseTableCellsWithStatisticalGapAnalysis(row);
+            
+            // 優先順位2: 統一境界分析（統計的分析が不十分な場合のみ）
+            var globalCells = new List<string>();
+            if (globalBoundaries.Any())
+            {
+                globalCells = ParseTableCellsWithGlobalBoundaries(row, globalBoundaries);
+            }
+            
+            // より多くのセルを生成した方を採用（ただし合理的な範囲内）
+            var cells = statisticalCells;
+            if (globalCells.Count > statisticalCells.Count && 
+                globalCells.Count <= statisticalCells.Count * 2)
+            {
+                cells = globalCells;
+            }
+            
             if (cells.Count > 0)
             {
                 allCells.Add(cells);
@@ -204,18 +219,11 @@ internal static class TableProcessor
         // 座標ベースのセル分割（保守的アプローチ）
         if (row.Words?.Count > 0)
         {
-            // ステップ1: 大きなギャップのみでの分析（保守的）
-            var largeCells = ParseTableCellsWithLargeGapsOnly(row);
-            if (largeCells.Count > 1 && largeCells.Count <= 6) // 妥当な列数に制限
+            // 統計的ギャップ分析による座標ベースセル分割（CLAUDE.md準拠）
+            var statisticalCells = ParseTableCellsWithStatisticalGapAnalysis(row);
+            if (statisticalCells.Count > 1)
             {
-                return largeCells;
-            }
-            
-            // ステップ2: 高度な境界検出（より保守的）
-            var coordinateCells = ParseTableCellsWithAdvancedBoundaryDetection(row);
-            if (coordinateCells.Count > 1 && coordinateCells.Count <= 6)
-            {
-                return coordinateCells;
+                return statisticalCells;
             }
         }
         
@@ -2031,8 +2039,29 @@ internal static class TableProcessor
                     var gap = sortedWords[i + 1].BoundingBox.Left - sortedWords[i].BoundingBox.Right;
                     var charWidth = avgWordWidth / Math.Max(1, sortedWords[i].Text.Length);
                     
-                    // より積極的な境界検出: 文字幅の50%以上のギャップ
-                    if (gap >= charWidth * 0.5)
+                    // CLAUDE.md準拠：統計的閾値による境界検出
+                    bool isSignificantGap = false;
+                    
+                    // 統計的分析：行内の全ギャップと比較
+                    var wordGaps = new List<double>();
+                    for (int j = 0; j < sortedWords.Count - 1; j++)
+                    {
+                        var g = sortedWords[j + 1].BoundingBox.Left - sortedWords[j].BoundingBox.Right;
+                        if (g > 0) wordGaps.Add(g);
+                    }
+                    
+                    if (wordGaps.Count > 0)
+                    {
+                        var sortedWordGaps = wordGaps.OrderBy(g => g).ToList();
+                        var medianIndex = sortedWordGaps.Count / 2;
+                        var median = sortedWordGaps[medianIndex];
+                        
+                        // より感度の高い境界検出：中央値以上のギャップ
+                        if (gap >= median && gap >= avgWordWidth * 0.3)
+                            isSignificantGap = true;
+                    }
+                    
+                    if (isSignificantGap)
                     {
                         var gapCenter = sortedWords[i].BoundingBox.Right + (gap / 2.0);
                         rowGaps.Add(gapCenter);
@@ -2088,7 +2117,11 @@ internal static class TableProcessor
         if (!gaps.Any()) return new List<double>();
         
         var clusters = new List<List<double>>();
-        var tolerance = gaps.Average() * 0.1; // 10%の許容誤差
+        // 統計的許容誤差計算（CLAUDE.md準拠）
+        var sortedGaps = gaps.OrderBy(g => g).ToList();
+        var q1Index = Math.Max(0, (int)(sortedGaps.Count * 0.25));
+        var q1 = sortedGaps[q1Index];
+        var tolerance = Math.Max(q1 * 0.1, 2.0); // 第1四分位数の10%、最低2pt
         
         foreach (var gap in gaps.OrderBy(g => g))
         {
@@ -2125,18 +2158,53 @@ internal static class TableProcessor
         }
         
         var sortedWords = row.Words.OrderBy(w => w.BoundingBox.Left).ToList();
+        var assignedWords = new HashSet<Word>(); // 重複配置防止
         
-        foreach (var boundary in boundaries)
+        for (int boundaryIndex = 0; boundaryIndex < boundaries.Count; boundaryIndex++)
         {
-            var wordsInColumn = sortedWords.Where(w =>
+            var boundary = boundaries[boundaryIndex];
+            var wordsInColumn = new List<Word>();
+            
+            foreach (var word in sortedWords)
             {
-                var wordCenter = (w.BoundingBox.Left + w.BoundingBox.Right) / 2.0;
-                return wordCenter >= boundary.Left && wordCenter <= boundary.Right;
-            }).ToList();
+                if (assignedWords.Contains(word)) continue; // 既に配置済み
+                
+                var wordLeft = word.BoundingBox.Left;
+                var wordRight = word.BoundingBox.Right;
+                var wordCenter = (wordLeft + wordRight) / 2.0;
+                
+                // より厳密な境界判定：最も適切な列を選択
+                bool isInBoundary = false;
+                double overlapRatio = 0;
+                
+                // 境界とのオーバーラップ計算
+                var overlapLeft = Math.Max(wordLeft, boundary.Left);
+                var overlapRight = Math.Min(wordRight, boundary.Right);
+                var overlapWidth = Math.Max(0, overlapRight - overlapLeft);
+                var wordWidth = wordRight - wordLeft;
+                
+                if (wordWidth > 0)
+                {
+                    overlapRatio = overlapWidth / wordWidth;
+                    
+                    // 50%以上のオーバーラップ、または単語の中心が境界内
+                    if (overlapRatio >= 0.5 || 
+                        (wordCenter >= boundary.Left && wordCenter <= boundary.Right))
+                    {
+                        isInBoundary = true;
+                    }
+                }
+                
+                if (isInBoundary)
+                {
+                    wordsInColumn.Add(word);
+                    assignedWords.Add(word); // 配置済みとしてマーク
+                }
+            }
             
             if (wordsInColumn.Any())
             {
-                var cellText = BuildCellTextWithProperSpacing(wordsInColumn);
+                var cellText = BuildCellTextWithProperSpacing(wordsInColumn.OrderBy(w => w.BoundingBox.Left).ToList());
                 cells.Add(cellText.Trim());
             }
             else
@@ -2146,6 +2214,149 @@ internal static class TableProcessor
         }
         
         return cells;
+    }
+    
+    // CLAUDE.md準拠：統計的ギャップ分析によるセル分割
+    private static List<string> ParseTableCellsWithStatisticalGapAnalysis(DocumentElement row)
+    {
+        if (row.Words == null || row.Words.Count <= 1)
+            return [row.Content.Trim()];
+        
+        var sortedWords = row.Words.OrderBy(w => w.BoundingBox.Left).ToList();
+        var gaps = new List<(double Gap, int Index)>();
+        
+        // セル内容混合問題解決：より厳密な境界検出（CLAUDE.md準拠）
+        var avgWordWidth = sortedWords.Average(w => w.BoundingBox.Width);
+        var avgCharWidth = avgWordWidth / Math.Max(1, sortedWords.Average(w => w.Text?.Length ?? 1));
+        
+        for (int i = 0; i < sortedWords.Count - 1; i++)
+        {
+            var currentWord = sortedWords[i];
+            var nextWord = sortedWords[i + 1];
+            var gap = nextWord.BoundingBox.Left - currentWord.BoundingBox.Right;
+            
+            // 極小ギャップも記録（ノイズ除去は後で実施）
+            if (gap >= 0) gaps.Add((gap, i));
+        }
+        
+        if (gaps.Count == 0)
+            return [string.Join(" ", sortedWords.Select(w => w.Text))];
+        
+        // 多段階境界検出アプローチ（田中30 → 田中|30分離用）
+        var sortedGaps = gaps.Select(g => g.Gap).OrderBy(g => g).ToList();
+        
+        // 段階1：文字間隔ベース（数値・アルファベットと日本語の境界検出）
+        var significantGaps = new List<(double Gap, int Index)>();
+        
+        for (int i = 0; i < gaps.Count; i++)
+        {
+            var (gap, index) = gaps[i];
+            var currentWord = sortedWords[index];
+            var nextWord = sortedWords[index + 1];
+            
+            // 座標ベース境界検出（CLAUDE.md準拠）
+            var relativeGap = gap / avgCharWidth;
+            
+            // 段階A：文字タイプ変更での自動境界検出
+            var currentText = currentWord.Text ?? "";
+            var nextText = nextWord.Text ?? "";
+            bool hasCharacterTypeChange = HasCharacterTypeTransition(currentText, nextText);
+            
+            // 段階B：通貨記号・数値境界の特別処理
+            bool hasCurrencySymbolBoundary = 
+                (currentText.Contains("$") || currentText.Contains("¥") || currentText.Contains("€")) ||
+                (nextText.Contains("$") || nextText.Contains("¥") || nextText.Contains("€"));
+            
+            // 精密境界検出条件（過分割防止のため保守的）
+            if (relativeGap >= 0.8 || // 平均文字幅の80%以上のギャップ
+                (relativeGap >= 0.4 && hasCharacterTypeChange) || // 文字タイプ変更かつ適度なギャップ
+                (relativeGap >= 0.3 && hasCurrencySymbolBoundary)) // 通貨記号かつ適度なギャップ
+            {
+                significantGaps.Add((gap, index));
+            }
+        }
+        
+        // 段階2：統計的外れ値検出（追加境界）
+        if (sortedGaps.Count >= 3)
+        {
+            var median = sortedGaps[sortedGaps.Count / 2];
+            var upperQuartile = sortedGaps[(int)(sortedGaps.Count * 0.75)];
+            
+            // 中央値の1.5倍以上を大きなギャップとして認識
+            var statisticalThreshold = Math.Max(median * 1.5, upperQuartile);
+            
+            foreach (var (gap, index) in gaps)
+            {
+                if (gap >= statisticalThreshold && 
+                    !significantGaps.Any(sg => sg.Index == index))
+                {
+                    significantGaps.Add((gap, index));
+                }
+            }
+        }
+        
+        // セルを構築
+        var cells = new List<string>();
+        var startIndex = 0;
+        
+        foreach (var (_, index) in significantGaps.OrderBy(g => g.Index))
+        {
+            var cellWords = sortedWords.Skip(startIndex).Take(index - startIndex + 1).ToList();
+            if (cellWords.Any())
+            {
+                cells.Add(string.Join(" ", cellWords.Select(w => w.Text)).Trim());
+            }
+            startIndex = index + 1;
+        }
+        
+        // 残りの単語を最後のセルに追加
+        if (startIndex < sortedWords.Count)
+        {
+            var remainingWords = sortedWords.Skip(startIndex).ToList();
+            if (remainingWords.Any())
+            {
+                cells.Add(string.Join(" ", remainingWords.Select(w => w.Text)).Trim());
+            }
+        }
+        
+        return cells.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+    }
+    
+    // CLAUDE.md準拠：座標ベース文字タイプ遷移検出
+    private static bool HasCharacterTypeTransition(string currentText, string nextText)
+    {
+        if (string.IsNullOrEmpty(currentText) || string.IsNullOrEmpty(nextText))
+            return false;
+        
+        // 文字タイプ分析（座標・フォント情報ベース）
+        var currentLastChar = currentText.Last();
+        var nextFirstChar = nextText.First();
+        
+        // 数値→文字、文字→数値の境界検出
+        bool isCurrentNumeric = char.IsDigit(currentLastChar);
+        bool isNextNumeric = char.IsDigit(nextFirstChar);
+        
+        // アルファベット→日本語、日本語→アルファベットの境界検出
+        bool isCurrentLatin = IsLatinCharacter(currentLastChar);
+        bool isNextLatin = IsLatinCharacter(nextFirstChar);
+        
+        // 通貨記号境界検出
+        bool isCurrentCurrency = IsCurrencySymbol(currentLastChar);
+        bool isNextCurrency = IsCurrencySymbol(nextFirstChar);
+        
+        return (isCurrentNumeric != isNextNumeric) ||
+               (isCurrentLatin != isNextLatin) ||
+               (isCurrentCurrency || isNextCurrency);
+    }
+    
+    private static bool IsLatinCharacter(char c)
+    {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    }
+    
+    private static bool IsCurrencySymbol(char c)
+    {
+        return c == '$' || c == '¥' || c == '€' || c == '£' || c == '¢';
     }
     
     // 箇条書きセルのフォーマット（CLAUDE.md準拠の座標ベース分析）
