@@ -80,34 +80,29 @@ internal static class TableProcessor
         // テーブル全体の統一列境界を計算（CLAUDE.md準拠）
         var globalBoundaries = CalculateGlobalColumnBoundaries(tableRows);
         
-        // 各行のセルを解析（統計的分析を優先）
+        // 各行のセルを解析（グローバル境界を優先で一貫性確保）
         foreach (var row in tableRows)
         {
-            // 優先順位1: 統計的ギャップ分析
-            var statisticalCells = ParseTableCellsWithStatisticalGapAnalysis(row);
+            var cells = new List<string>();
             
-            // 優先順位2: 統一境界分析（統計的分析が不十分な場合のみ）
-            var globalCells = new List<string>();
+            // 優先順位1: グローバル境界による統一列構造（CLAUDE.md準拠）
             if (globalBoundaries.Any())
             {
-                globalCells = ParseTableCellsWithGlobalBoundaries(row, globalBoundaries);
+                cells = ParseTableCellsWithGlobalBoundaries(row, globalBoundaries);
             }
             
-            // より多くのセルを生成した方を採用（ただし合理的な範囲内）
-            var cells = statisticalCells;
-            if (globalCells.Count > statisticalCells.Count && 
-                globalCells.Count <= statisticalCells.Count * 2)
+            // 優先順位2: 統計的ギャップ分析（グローバル境界が失敗した場合のみ）
+            if (cells.Count == 0 || cells.All(c => string.IsNullOrWhiteSpace(c)))
             {
-                cells = globalCells;
+                cells = ParseTableCellsWithStatisticalGapAnalysis(row);
             }
             
-            // デバッグ：各行のセル数を確認
-            if (row.Content.Contains("製品名") || row.Content.Contains("Basic") || row.Content.Contains("プレミアム"))
+            // セル数の動的調整（CLAUDE.md準拠）
+            // グローバル境界から期待される列数を計算
+            var expectedColumns = globalBoundaries.Count;
+            while (cells.Count < expectedColumns && expectedColumns > 0)
             {
-                Console.WriteLine($"DEBUG TABLE - Row: {row.Content.Substring(0, Math.Min(50, row.Content.Length))}...");
-                Console.WriteLine($"DEBUG TABLE - Statistical cells ({statisticalCells.Count}): [{string.Join(", ", statisticalCells.Select(c => $"'{c}'"))}]");
-                Console.WriteLine($"DEBUG TABLE - Global cells ({globalCells.Count}): [{string.Join(", ", globalCells.Select(c => $"'{c}'"))}]");
-                Console.WriteLine($"DEBUG TABLE - Final cells ({cells.Count}): [{string.Join(", ", cells.Select(c => $"'{c}'"))}]");
+                cells.Add("");
             }
             
             if (cells.Count > 0)
@@ -2069,8 +2064,8 @@ internal static class TableProcessor
                         var medianIndex = sortedWordGaps.Count / 2;
                         var median = sortedWordGaps[medianIndex];
                         
-                        // より感度の高い境界検出：中央値以上のギャップ
-                        if (gap >= median && gap >= avgWordWidth * 0.3)
+                        // CLAUDE.md準拠：精密境界検出（セル内容混合解決）
+                        if (gap >= median * 0.8 && gap >= avgWordWidth * 0.5)
                             isSignificantGap = true;
                     }
                     
@@ -2273,7 +2268,7 @@ internal static class TableProcessor
         // 多段階境界検出アプローチ（田中30 → 田中|30分離用）
         var sortedGaps = gaps.Select(g => g.Gap).OrderBy(g => g).ToList();
         
-        // 段階1：文字間隔ベース（数値・アルファベットと日本語の境界検出）
+        // 段階1：座標ベース精密境界検出（CLAUDE.md準拠）
         var significantGaps = new List<(double Gap, int Index)>();
         
         for (int i = 0; i < gaps.Count; i++)
@@ -2282,31 +2277,33 @@ internal static class TableProcessor
             var currentWord = sortedWords[index];
             var nextWord = sortedWords[index + 1];
             
-            // 座標ベース境界検出（CLAUDE.md準拠）
-            var relativeGap = gap / avgCharWidth;
+            // 単語の文字幅による動的閾値計算（CLAUDE.md準拠）
+            var currentWordCharWidth = currentWord.BoundingBox.Width / Math.Max(1, currentWord.Text?.Length ?? 1);
+            var nextWordCharWidth = nextWord.BoundingBox.Width / Math.Max(1, nextWord.Text?.Length ?? 1);
+            var localCharWidth = (currentWordCharWidth + nextWordCharWidth) / 2.0;
             
-            // CLAUDE.md準拠：純粋な座標ベース境界検出
-            if (relativeGap >= 1.0) // 平均文字幅以上のギャップのみ境界とする
+            // 座標ベース境界検出（セル内容混合解決用）
+            var relativeGap = gap / localCharWidth;
+            
+            // CLAUDE.md準拠：精密座標ベース境界検出（精密分離）
+            if (relativeGap >= 0.3) // より精密な境界検出で年齢|職業分離
             {
                 significantGaps.Add((gap, index));
             }
         }
         
-        // 段階2：CLAUDE.md準拠の統計的外れ値検出（空列防止のため保守的）
-        if (sortedGaps.Count >= 5 && significantGaps.Count == 0) // 十分なデータがあり、段階1で境界が見つからない場合のみ
+        // 段階2：CLAUDE.md準拠の統計的外れ値検出（過分割防止のため保守的）
+        if (sortedGaps.Count >= 3 && significantGaps.Count > 5) // 5分割以上で過分割判定
         {
             var median = sortedGaps[sortedGaps.Count / 2];
             var upperQuartile = sortedGaps[(int)(sortedGaps.Count * 0.75)];
             
-            // より保守的な閾値：四分位数の2倍以上のみ追加境界とする
-            var statisticalThreshold = upperQuartile * 2.0;
+            // 四分位数以上の大きなギャップのみ保持（適度な分割維持）
+            var filteredGaps = significantGaps.Where(g => g.Gap >= upperQuartile * 0.8).ToList();
             
-            foreach (var (gap, index) in gaps)
+            if (filteredGaps.Count >= 3 && filteredGaps.Count <= 5) // 3-5列の適切な分割数
             {
-                if (gap >= statisticalThreshold)
-                {
-                    significantGaps.Add((gap, index));
-                }
+                significantGaps = filteredGaps;
             }
         }
         
