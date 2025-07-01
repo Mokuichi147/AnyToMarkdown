@@ -111,21 +111,6 @@ internal static class MarkdownGenerator
         var currentText = current.Content.Trim();
         var nextText = next.Content.Trim();
         
-        // 文章の区切りを示す文字で終わっている場合は統合しない（より厳格に）
-        if (currentText.EndsWith(".") || currentText.EndsWith("。") || 
-            currentText.EndsWith("!") || currentText.EndsWith("？") ||
-            currentText.EndsWith("?") || currentText.EndsWith("！") ||
-            currentText.EndsWith("です。") || currentText.EndsWith("ます。"))
-        {
-            return false;
-        }
-        
-        // 異なる文章パターンは統合しない
-        if (currentText.StartsWith("これは") && nextText.Contains("**"))
-        {
-            return false;
-        }
-        
         // 次の文が大文字で始まっている場合は新しい文の可能性
         if (nextText.Length > 0 && char.IsUpper(nextText[0]))
         {
@@ -158,8 +143,7 @@ internal static class MarkdownGenerator
             return false;
         }
         
-        return true;
-        
+        /*
         // 垂直距離による判定
         if (current.Words.Count > 0 && next.Words.Count > 0)
         {
@@ -173,7 +157,8 @@ internal static class MarkdownGenerator
                 return false;
             }
         }
-        
+        */
+
         return true;
     }
     

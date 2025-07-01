@@ -95,7 +95,7 @@ internal static class PostProcessor
                 {
                     element.Type = ElementType.Header;
                 }
-                else if (!isParagraphPattern && 
+                else if (!isParagraphPattern && element.Content != null && 
                     ElementDetector.IsHeaderStructure(element.Content, element.Words, element.FontSize, fontAnalysis))
                 {
                     element.Type = ElementType.Header;
@@ -144,7 +144,10 @@ internal static class PostProcessor
         result = DetectTablesWithoutGraphics(result);
         
         // 座標ベースのテーブル要素統合処理
-        result = ConsolidateTableElementsByCoordinates(result, graphicsInfo);
+        if (graphicsInfo != null)
+        {
+            result = ConsolidateTableElementsByCoordinates(result, graphicsInfo);
+        }
         
         // 連続するテーブル行の検出
         result = DetectTableSequences(result);
