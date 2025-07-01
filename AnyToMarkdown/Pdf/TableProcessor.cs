@@ -101,6 +101,15 @@ internal static class TableProcessor
                 cells = globalCells;
             }
             
+            // デバッグ：各行のセル数を確認
+            if (row.Content.Contains("製品名") || row.Content.Contains("Basic") || row.Content.Contains("プレミアム"))
+            {
+                Console.WriteLine($"DEBUG TABLE - Row: {row.Content.Substring(0, Math.Min(50, row.Content.Length))}...");
+                Console.WriteLine($"DEBUG TABLE - Statistical cells ({statisticalCells.Count}): [{string.Join(", ", statisticalCells.Select(c => $"'{c}'"))}]");
+                Console.WriteLine($"DEBUG TABLE - Global cells ({globalCells.Count}): [{string.Join(", ", globalCells.Select(c => $"'{c}'"))}]");
+                Console.WriteLine($"DEBUG TABLE - Final cells ({cells.Count}): [{string.Join(", ", cells.Select(c => $"'{c}'"))}]");
+            }
+            
             if (cells.Count > 0)
             {
                 allCells.Add(cells);
@@ -111,6 +120,10 @@ internal static class TableProcessor
         
         // 最大列数を決定
         var maxColumns = allCells.Max(row => row.Count);
+        
+        // デバッグ：列数の決定過程を確認
+        Console.WriteLine($"DEBUG TABLE - All rows column counts: [{string.Join(", ", allCells.Select(row => row.Count))}]");
+        Console.WriteLine($"DEBUG TABLE - Max columns determined: {maxColumns}");
         
         // 各行の列数を統一（空列を適切に処理）
         foreach (var row in allCells)
@@ -2223,20 +2236,35 @@ internal static class TableProcessor
             return [row.Content.Trim()];
         
         var sortedWords = row.Words.OrderBy(w => w.BoundingBox.Left).ToList();
+        
+        // デバッグ：単語の境界とテキストを確認
+        if (row.Content.Contains("Basic") && row.Content.Contains("$50"))
+        {
+            Console.WriteLine($"DEBUG - Row content: {row.Content}");
+            Console.WriteLine($"DEBUG - Words count: {sortedWords.Count}");
+            for (int i = 0; i < sortedWords.Count; i++)
+            {
+                var word = sortedWords[i];
+                Console.WriteLine($"DEBUG - Word {i}: '{word.Text}' at ({word.BoundingBox.Left:F2}, {word.BoundingBox.Right:F2}) width={word.BoundingBox.Width:F2}");
+            }
+        }
+        
         var gaps = new List<(double Gap, int Index)>();
         
         // セル内容混合問題解決：より厳密な境界検出（CLAUDE.md準拠）
         var avgWordWidth = sortedWords.Average(w => w.BoundingBox.Width);
         var avgCharWidth = avgWordWidth / Math.Max(1, sortedWords.Average(w => w.Text?.Length ?? 1));
         
+        // 単語間距離の詳細分析（Basic & Standard $50.00分離用）
         for (int i = 0; i < sortedWords.Count - 1; i++)
         {
             var currentWord = sortedWords[i];
             var nextWord = sortedWords[i + 1];
             var gap = nextWord.BoundingBox.Left - currentWord.BoundingBox.Right;
             
-            // 極小ギャップも記録（ノイズ除去は後で実施）
-            if (gap >= 0) gaps.Add((gap, i));
+            // 座標ベース物理的ギャップ分析（CLAUDE.md準拠）
+            // 負のギャップ（重複）も含めて全て記録
+            gaps.Add((gap, i));
         }
         
         if (gaps.Count == 0)
@@ -2257,20 +2285,8 @@ internal static class TableProcessor
             // 座標ベース境界検出（CLAUDE.md準拠）
             var relativeGap = gap / avgCharWidth;
             
-            // 段階A：文字タイプ変更での自動境界検出
-            var currentText = currentWord.Text ?? "";
-            var nextText = nextWord.Text ?? "";
-            bool hasCharacterTypeChange = HasCharacterTypeTransition(currentText, nextText);
-            
-            // 段階B：通貨記号・数値境界の特別処理
-            bool hasCurrencySymbolBoundary = 
-                (currentText.Contains("$") || currentText.Contains("¥") || currentText.Contains("€")) ||
-                (nextText.Contains("$") || nextText.Contains("¥") || nextText.Contains("€"));
-            
-            // 精密境界検出条件（過分割防止のため保守的）
-            if (relativeGap >= 0.8 || // 平均文字幅の80%以上のギャップ
-                (relativeGap >= 0.4 && hasCharacterTypeChange) || // 文字タイプ変更かつ適度なギャップ
-                (relativeGap >= 0.3 && hasCurrencySymbolBoundary)) // 通貨記号かつ適度なギャップ
+            // CLAUDE.md準拠：純粋な座標ベース境界検出
+            if (relativeGap >= 1.0) // 平均文字幅以上のギャップのみ境界とする
             {
                 significantGaps.Add((gap, index));
             }
@@ -2319,44 +2335,15 @@ internal static class TableProcessor
             }
         }
         
-        return cells.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
-    }
-    
-    // CLAUDE.md準拠：座標ベース文字タイプ遷移検出
-    private static bool HasCharacterTypeTransition(string currentText, string nextText)
-    {
-        if (string.IsNullOrEmpty(currentText) || string.IsNullOrEmpty(nextText))
-            return false;
+        var finalCells = cells.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
         
-        // 文字タイプ分析（座標・フォント情報ベース）
-        var currentLastChar = currentText.Last();
-        var nextFirstChar = nextText.First();
+        // デバッグ：最終結果を確認
+        if (row.Content.Contains("Basic") && row.Content.Contains("$50"))
+        {
+            Console.WriteLine($"DEBUG - Final cells: [{string.Join(", ", finalCells.Select(c => $"'{c}'"))}]");
+        }
         
-        // 数値→文字、文字→数値の境界検出
-        bool isCurrentNumeric = char.IsDigit(currentLastChar);
-        bool isNextNumeric = char.IsDigit(nextFirstChar);
-        
-        // アルファベット→日本語、日本語→アルファベットの境界検出
-        bool isCurrentLatin = IsLatinCharacter(currentLastChar);
-        bool isNextLatin = IsLatinCharacter(nextFirstChar);
-        
-        // 通貨記号境界検出
-        bool isCurrentCurrency = IsCurrencySymbol(currentLastChar);
-        bool isNextCurrency = IsCurrencySymbol(nextFirstChar);
-        
-        return (isCurrentNumeric != isNextNumeric) ||
-               (isCurrentLatin != isNextLatin) ||
-               (isCurrentCurrency || isNextCurrency);
-    }
-    
-    private static bool IsLatinCharacter(char c)
-    {
-        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-    }
-    
-    private static bool IsCurrencySymbol(char c)
-    {
-        return c == '$' || c == '¥' || c == '€' || c == '£' || c == '¢';
+        return finalCells;
     }
     
     // 箇条書きセルのフォーマット（CLAUDE.md準拠の座標ベース分析）
