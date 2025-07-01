@@ -2292,19 +2292,18 @@ internal static class TableProcessor
             }
         }
         
-        // 段階2：統計的外れ値検出（追加境界）
-        if (sortedGaps.Count >= 3)
+        // 段階2：CLAUDE.md準拠の統計的外れ値検出（空列防止のため保守的）
+        if (sortedGaps.Count >= 5 && significantGaps.Count == 0) // 十分なデータがあり、段階1で境界が見つからない場合のみ
         {
             var median = sortedGaps[sortedGaps.Count / 2];
             var upperQuartile = sortedGaps[(int)(sortedGaps.Count * 0.75)];
             
-            // 中央値の1.5倍以上を大きなギャップとして認識
-            var statisticalThreshold = Math.Max(median * 1.5, upperQuartile);
+            // より保守的な閾値：四分位数の2倍以上のみ追加境界とする
+            var statisticalThreshold = upperQuartile * 2.0;
             
             foreach (var (gap, index) in gaps)
             {
-                if (gap >= statisticalThreshold && 
-                    !significantGaps.Any(sg => sg.Index == index))
+                if (gap >= statisticalThreshold)
                 {
                     significantGaps.Add((gap, index));
                 }
@@ -2335,12 +2334,29 @@ internal static class TableProcessor
             }
         }
         
-        var finalCells = cells.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+        // CLAUDE.md準拠：空列防止と最終フィルタリング
+        var finalCells = cells.Where(c => !string.IsNullOrWhiteSpace(c) && c.Length > 0).ToList();
         
-        // デバッグ：最終結果を確認
-        if (row.Content.Contains("Basic") && row.Content.Contains("$50"))
+        // 統計的分析：過度に細分化されたセルの統合検討
+        if (finalCells.Count > 6) // 6列を超える場合は過分割の可能性
         {
-            Console.WriteLine($"DEBUG - Final cells: [{string.Join(", ", finalCells.Select(c => $"'{c}'"))}]");
+            // 隣接する短いセルを統合（座標ベース判定）
+            var consolidatedCells = new List<string>();
+            for (int i = 0; i < finalCells.Count; i++)
+            {
+                if (i < finalCells.Count - 1 && 
+                    finalCells[i].Length <= 2 && finalCells[i + 1].Length <= 2)
+                {
+                    // 短いセル（記号など）は隣接セルと統合
+                    consolidatedCells.Add($"{finalCells[i]} {finalCells[i + 1]}".Trim());
+                    i++; // 次のセルをスキップ
+                }
+                else
+                {
+                    consolidatedCells.Add(finalCells[i]);
+                }
+            }
+            finalCells = consolidatedCells;
         }
         
         return finalCells;
