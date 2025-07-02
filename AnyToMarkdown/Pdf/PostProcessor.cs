@@ -1049,7 +1049,9 @@ internal static class PostProcessor
             }
         }
 
-        return hasPreviousTable || hasNextTable;
+        // CLAUDE.md準拠：単独行のテーブル化を防止
+        // 前後にテーブル行がある場合のみテーブルとして認識
+        return hasPreviousTable && hasNextTable;
     }
 
     private static bool IsElementInTableArea(DocumentElement element, UglyToad.PdfPig.Core.PdfRectangle area)

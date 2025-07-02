@@ -151,6 +151,28 @@ internal static class ElementDetector
 
         return false;
     }
+    
+    // CLAUDE.md準拠：純粋な物理的レイアウト分析によるヘッダー判定
+    private static bool IsObviousHeaderPattern(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        
+        var cleanText = text.Trim();
+        
+        // Markdownヘッダー記号（明確な記法）
+        if (cleanText.StartsWith("#")) return true;
+        
+        // 数値階層パターン（1.1.1形式）
+        if (System.Text.RegularExpressions.Regex.IsMatch(cleanText, @"^(\d+\.)+\s*[^\d]"))
+            return true;
+            
+        // 統計的分析：短い行かつ単語密度が低い
+        var words = cleanText.Split([' '], StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= 4 && cleanText.Length > 20)
+            return true;
+            
+        return false;
+    }
 
     public static bool IsTableRowLike(string text, List<Word> words)
     {
@@ -158,6 +180,10 @@ internal static class ElementDetector
             return false;
 
         var cleanText = text.Trim();
+        
+        // CLAUDE.md準拠：明確にヘッダーや見出しの場合はテーブル行として扱わない
+        if (IsObviousHeaderPattern(cleanText))
+            return false;
 
         // 明示的なテーブル記号
         if (cleanText.Contains("|"))
@@ -179,18 +205,22 @@ internal static class ElementDetector
         if (HasTableLikeTextPattern(cleanText))
             return true;
 
-        // 短い単語の配列（3つ以上）
+        // CLAUDE.md準拠：厳格なテーブル行判定
+        // 単一行のタイトルや見出しを除外するため、より厳しい条件を適用
+        
+        // CLAUDE.md準拠：より厳格なテーブル行判定（見出し誤判定防止）
         var wordList = cleanText.Split([' '], StringSplitOptions.RemoveEmptyEntries);
-        if (wordList.Length >= 3)
+        if (wordList.Length >= 5) // 5つ以上の単語を要求（より厳格）
         {
-            var allShort = wordList.All(w => w.Length <= 20);
+            var allShort = wordList.All(w => w.Length <= 15); // 文字数制限を厳格化
             var avgLength = wordList.Average(w => w.Length);
-            if (allShort && avgLength <= 10)
+            var hasNumbers = wordList.Any(w => w.Any(char.IsDigit)); // 数値を含む場合のみ
+            if (allShort && avgLength <= 8 && hasNumbers) // より厳格な条件
                 return true;
         }
 
-        // 座標ベースの規則的配置（感度向上）
-        if (words.Count >= 2) // 2つ以上の単語でも検出
+        // CLAUDE.md準拠：座標ベースの厳格なテーブル判定
+        if (words.Count >= 3) // 3つ以上の単語が必要
         {
             var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
             var gaps = new List<double>();
@@ -201,9 +231,12 @@ internal static class ElementDetector
                 gaps.Add(gap);
             }
             
-            // より小さなギャップでも検出
+            // より厳格なギャップ判定（テーブルらしい大きなギャップのみ）
             var avgWordWidth = words.Average(w => w.BoundingBox.Width);
-            if (gaps.Any(g => g > avgWordWidth * 0.5)) // 単語幅の50%以上のギャップ
+            var significantGaps = gaps.Count(g => g > avgWordWidth * 1.5); // 1.5倍以上の大きなギャップ
+            
+            // 複数の大きなギャップがある場合のみテーブル行と判定
+            if (significantGaps >= 2)
                 return true;
         }
 
@@ -459,7 +492,12 @@ internal static class ElementDetector
 
     private static bool HasRegularSpacing(List<Word> words)
     {
-        if (words == null || words.Count < 3)
+        if (words == null || words.Count < 4) // より厳格な条件
+            return false;
+            
+        // CLAUDE.md準拠：見出しパターンを除外
+        var text = string.Join(" ", words.Select(w => w.Text ?? ""));
+        if (IsObviousHeaderPattern(text))
             return false;
 
         var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
@@ -503,6 +541,10 @@ internal static class ElementDetector
     private static bool HasTableLikeTextPattern(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
+            return false;
+            
+        // CLAUDE.md準拠：見出しパターンを除外
+        if (IsObviousHeaderPattern(text))
             return false;
 
         // 複数の空白が連続

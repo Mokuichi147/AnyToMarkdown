@@ -35,6 +35,27 @@ internal static class TableProcessor
             {
                 continue; // 空行は無視して続行
             }
+            else if (allElements[i].Type == ElementType.Paragraph && allElements[i].Content.Trim().Length <= 100) // 100文字まで拡大
+            {
+                // CLAUDE.md準拠：短い段落の統合判定を追加（分離セル内容対応）
+                if (ShouldIntegrateIntoPreviousTableRowByCoordinates(allElements[i], consecutiveTableRows.Last()))
+                {
+                    var lastRow = consecutiveTableRows.Last();
+                    
+                    // 座標ベース統合
+                    if (allElements[i].Words != null && allElements[i].Words.Count > 0 && 
+                        lastRow.Words != null && lastRow.Words.Count > 0)
+                    {
+                        var combinedWords = new List<Word>(lastRow.Words);
+                        combinedWords.AddRange(allElements[i].Words);
+                        lastRow.Words = combinedWords;
+                    }
+                    
+                    lastRow.Content = lastRow.Content + " " + allElements[i].Content.Trim();
+                    continue; // 統合して続行
+                }
+                // 次のケースに遅して通常の段落処理を続行
+            }
             else if (allElements[i].Type == ElementType.Header)
             {
                 break; // ヘッダーが出現したら別のセクション
@@ -74,6 +95,9 @@ internal static class TableProcessor
         // テーブル行のしきい値を調整（より厳格に）
         if (consecutiveTableRows.Count >= 1) // 単一行でもテーブルとして処理
         {
+            // テーブル処理後の後続段落統合処理
+            IntegrateSubsequentParagraphs(consecutiveTableRows, allElements, currentIndex);
+            
             return GenerateMarkdownTableWithHeaders(consecutiveTableRows);
         }
         
@@ -128,8 +152,12 @@ internal static class TableProcessor
         var maxColumns = allCells.Max(row => row.Count);
         
         
-        // CLAUDE.md準拠：完全に空の列を除去
+        // CLAUDE.md準拠：完全に空の列を除去（強化版）
         allCells = RemoveEmptyColumns(allCells);
+        
+        // さらに、ほぼ空の列も削除（90%以上が空）
+        allCells = RemoveMostlyEmptyColumns(allCells);
+        
         maxColumns = allCells.Count > 0 ? allCells.Max(row => row.Count) : 0;
         
         if (maxColumns == 0) return "";
@@ -453,11 +481,12 @@ internal static class TableProcessor
         return result;
     }
     
+    // CLAUDE.md準拠：座標ベーステーブル行連続性判定
     private static bool IsTableRowContinuous(DocumentElement previousRow, DocumentElement currentRow)
     {
         if (previousRow.Words == null || previousRow.Words.Count == 0 ||
             currentRow.Words == null || currentRow.Words.Count == 0)
-            return false; // 座標情報がない場合は保守的に統合しない
+            return false;
         
         // 垂直間隔の分析
         var previousBottom = previousRow.Words.Min(w => w.BoundingBox.Bottom);
@@ -470,20 +499,23 @@ internal static class TableProcessor
         var currentLeft = currentRow.Words.Min(w => w.BoundingBox.Left);
         var currentRight = currentRow.Words.Max(w => w.BoundingBox.Right);
         
-        // 水平方向の重複があるかチェック
-        bool hasHorizontalOverlap = !(previousRight < currentLeft || currentRight < previousLeft);
+        // 水平方向の重複計算
+        var overlapLeft = Math.Max(previousLeft, currentLeft);
+        var overlapRight = Math.Min(previousRight, currentRight);
+        var overlapWidth = Math.Max(0, overlapRight - overlapLeft);
+        var totalWidth = Math.Max(previousRight, currentRight) - Math.Min(previousLeft, currentLeft);
         
-        // フォントサイズベースの垂直間隔閾値
+        bool hasSignificantOverlap = totalWidth > 0 && (overlapWidth / totalWidth) >= 0.2; // 0.3から0.2に緩和
+        
+        // 更なる柔軟性：水平位置の近接性も考慮
+        bool isHorizontallyClose = Math.Abs(previousLeft - currentLeft) <= 50 || Math.Abs(previousRight - currentRight) <= 50;
+        
+        // フォントサイズベースの垂直間隔閾値（更に寛容に）
         var avgFontSize = previousRow.Words.Average(w => w.BoundingBox.Height);
-        var maxVerticalGap = avgFontSize * 1.5; // フォントサイズの1.5倍以内
+        var maxVerticalGap = avgFontSize * 3.5; // 2.5倍から3.5倍にさらに拡大
         
-        // より厳格な連続性チェック：
-        // 1. 垂直間隔が適度に小さい
-        // 2. 水平方向に重複がある
-        // 3. 大きなギャップ（テーブル間隔）を除外
-        bool isTooFarVertically = verticalGap > maxVerticalGap * 2.0; // 大きすぎるギャップは別テーブル
-        
-        return verticalGap <= maxVerticalGap && hasHorizontalOverlap && !isTooFarVertically;
+        // CLAUDE.md準拠：より寛容な連続性判定
+        return verticalGap <= maxVerticalGap && (hasSignificantOverlap || isHorizontallyClose);
     }
     
     // CLAUDE.md準拠：座標ベース段落統合判定
@@ -499,24 +531,58 @@ internal static class TableProcessor
         var tableLeft = tableRow.Words.Min(w => w.BoundingBox.Left);
         var tableRight = tableRow.Words.Max(w => w.BoundingBox.Right);
         
-        // 水平方向の重複計算
+        // 水平方向の重複計算（より柔軟に）
         var overlapLeft = Math.Max(paragraphLeft, tableLeft);
         var overlapRight = Math.Min(paragraphRight, tableRight);
         var overlapWidth = Math.Max(0, overlapRight - overlapLeft);
         var paragraphWidth = paragraphRight - paragraphLeft;
         
-        bool hasSignificantOverlap = paragraphWidth > 0 && (overlapWidth / paragraphWidth) >= 0.6;
+        // 重複閾値を下げて、より多くの段落を統合対象にする
+        bool hasSignificantOverlap = paragraphWidth > 0 && (overlapWidth / paragraphWidth) >= 0.2; // 0.4から0.2にさらに緩和
         
-        // CLAUDE.md準拠：垂直間隔の統計的評価
+        // より寛容な範囲判定：段落がテーブル範囲内またはその近傍にあるか
+        bool isWithinExtendedTableBounds = paragraphLeft >= tableLeft - 50 && paragraphRight <= tableRight + 50; // 30かぐ20に拡大
+        
+        // CLAUDE.md準拠：垂直間隔の統計的評価（より寛容に）
         var tableBottom = tableRow.Words.Min(w => w.BoundingBox.Bottom);
         var paragraphTop = paragraph.Words.Max(w => w.BoundingBox.Top);
         var verticalGap = Math.Abs(tableBottom - paragraphTop);
         
-        // 動的垂直閾値（行高基準）
+        // 動的垂直閾値を拡大（より多くの分離セルを統合）
         var avgRowHeight = tableRow.Words.Average(w => w.BoundingBox.Height);
-        var maxVerticalGap = avgRowHeight * 1.2;
+        var maxVerticalGap = avgRowHeight * 5.0;  // 3.0から5.0にさらに拡大して分離セルを捕捉
         
-        return hasSignificantOverlap && verticalGap <= maxVerticalGap;
+        // 追加条件：水平位置の近接性を考慮
+        bool isHorizontallyAligned = Math.Abs(paragraphLeft - tableLeft) <= 100; // より寛容な水平位置判定
+        
+        // より寛容な統合条件（いずれかの条件を満たす）
+        bool shouldIntegrate = (hasSignificantOverlap || isWithinExtendedTableBounds || isHorizontallyAligned) && verticalGap <= maxVerticalGap;
+        
+        // 特別ケース：短いテキスト（30文字以下）の拡張統合条件
+        if (!shouldIntegrate && paragraph.Content.Trim().Length <= 30)
+        {
+            // より寛容な垂直距離閾値（6倍まで拡張）
+            bool isVeryClose = verticalGap <= avgRowHeight * 6.0;
+            
+            // 水平重複の最小条件をより緩く（Wordsプロパティを使用）
+            var localParagraphLeft = paragraph.Words?.Min(w => w.BoundingBox.Left) ?? 0;
+            var localTableLeft = tableRow.Words?.Min(w => w.BoundingBox.Left) ?? 0;
+            var localParagraphRight = paragraph.Words?.Max(w => w.BoundingBox.Right) ?? 0;
+            var localTableRight = tableRow.Words?.Max(w => w.BoundingBox.Right) ?? 0;
+            var localAvgCharWidth = tableRow.Words?.Average(w => w.BoundingBox.Width) ?? 10.0;
+            
+            bool hasMinimalOverlap = overlapWidth > 0 || 
+                                    Math.Abs(localParagraphLeft - localTableLeft) <= localAvgCharWidth * 2;
+            
+            // テーブル範囲内の位置判定
+            bool isWithinTableHorizontalRange = 
+                localParagraphLeft >= localTableLeft - localAvgCharWidth * 3 &&
+                localParagraphRight <= localTableRight + localAvgCharWidth * 3;
+            
+            shouldIntegrate = isVeryClose && (hasMinimalOverlap || isWithinTableHorizontalRange);
+        }
+        
+        return shouldIntegrate;
     }
     
     
@@ -589,12 +655,33 @@ internal static class TableProcessor
         return values.Sum(v => Math.Pow(v - mean, 2)) / values.Count;
     }
     
-    // テーブル全体の統一列境界計算（CLAUDE.md準拠：垂直座標クラスタリング強化版）
+    // CLAUDE.md準拠：垂直共通空白領域による列境界検出
     private static List<ColumnBoundary> CalculateGlobalColumnBoundaries(List<DocumentElement> tableRows)
     {
         if (tableRows.Count == 0) return new List<ColumnBoundary>();
         
-        // CLAUDE.md準拠：垂直座標による列境界検出の前処理
+        // 新アプローチ：垂直共通空白領域の検出
+        var verticalGaps = FindVerticalCommonGaps(tableRows);
+        if (verticalGaps.Count > 0)
+        {
+            return BuildBoundariesFromVerticalGaps(verticalGaps, tableRows);
+        }
+        
+        // フォールバック：行間一貫性を優先した境界検出
+        var consistentBoundaries = CalculateConsistentColumnBoundaries(tableRows);
+        if (consistentBoundaries.Count > 0)
+        {
+            return consistentBoundaries;
+        }
+        
+        // フォールバック：列配置統一性分析
+        var alignmentBoundaries = CalculateColumnBoundariesByAlignment(tableRows);
+        if (alignmentBoundaries.Count > 0)
+        {
+            return alignmentBoundaries;
+        }
+        
+        // 従来の方法にフォールバック：CLAUDE.md準拠の垂直座標分析
         var allWords = tableRows.SelectMany(r => r.Words ?? new List<Word>())
                                .Where(w => !string.IsNullOrEmpty(w.Text))
                                .ToList();
@@ -654,29 +741,29 @@ internal static class TableProcessor
                         // フェーズ1：明らかな列境界を識別
                         // フェーズ2：語句間区切りをフィルタリング
                         
-                        // CLAUDE.md準拠：改善された統計的境界識別
-                        // 問題：「名前 年齢」が統合、必要な境界の見落とし
-                        // 解決：統計的外れ値検出の精度向上と文字幅正規化の改善
+                        // CLAUDE.md準拠：バランスの取れた統計的境界検出
+                        // 問題：過度に保守的で意味のある列境界を統合してしまう
+                        // 解決：統計分析と座標ベース分析のバランス改善
                         
-                        // CLAUDE.md準拠：精密化された統計的境界検出
-                        // 目標：「説明 備考」「名前 年齢」などの語句境界を正確に検出
-                        // 方法：分布の変動に敏感な統計的分析
+                        // 改善1：適応的統計閾値（精度とリコールのバランス）
+                        var moderateThreshold = q25 + (iqr * 0.4); // Q1から40%（適度に緩和）
+                        var isModerateOutlier = gap >= moderateThreshold;
                         
-                        // 改善1：分散考慮型統計閾値（異常値検出の精度向上）
-                        var varianceBasedThreshold = q25 + (iqr * 0.8); // Q1から上位80%をターゲット
-                        var medianDeviation = Math.Abs(gap - median);
-                        var isStatisticalOutlier = gap >= varianceBasedThreshold && medianDeviation > median * 0.3;
+                        // 改善2：多段階文字幅判定（柔軟性向上）
+                        var localCharWidth = avgWordWidth / Math.Max(sortedWords[i].Text.Length, 1);
+                        var normalizedGap = gap / Math.Max(localCharWidth, 5.0);
+                        var isRelativelySignificant = normalizedGap >= 1.2; // 文字幅の1.2倍以上（緩和）
+                        var isStronglySignificant = normalizedGap >= 2.5; // 強い境界指標
                         
-                        // 改善2：語句間隔の平均的パターン分析
-                        var wordSpacingPattern = median * 0.7; // 通常の語句間隔の70%を基準
-                        var isAboveNormalSpacing = gap > wordSpacingPattern;
+                        // 改善3：段階的境界判定（柔軟性確保）
+                        var isLargerThanMedian = gap > median * 1.2; // 中央値の120%以上（緩和）
+                        var isAbsolutelySignificant = gap >= avgWordWidth * 0.6; // 語幅の60%以上（緩和）
+                        var isVerySignificant = gap >= avgWordWidth * 1.2; // 非常に大きなギャップ
                         
-                        // 改善3：文字サイズ正規化による適応的判定
-                        var normalizedGapSize = gap / Math.Max(avgWordWidth, 10.0);
-                        var isSizeSignificant = normalizedGapSize >= 0.6; // 文字幅の60%以上
-                        
-                        // 統合判定：複数条件による境界認識
-                        if (isStatisticalOutlier && isAboveNormalSpacing && isSizeSignificant)
+                        // CLAUDE.md準拠：多段階境界検出（精度とリコールのバランス）
+                        if (isStronglySignificant || isVerySignificant || 
+                            (isModerateOutlier && isLargerThanMedian) || 
+                            (isRelativelySignificant && isAbsolutelySignificant))
                             isSignificantGap = true;
                     }
                     
@@ -948,7 +1035,7 @@ internal static class TableProcessor
         return cells;
     }
     
-    // CLAUDE.md準拠：純粋な座標・統計分析による境界検出
+    // CLAUDE.md準拠：完全新アプローチ - 物理的レイアウト分析による境界検出
     private static List<string> ParseTableCellsWithStatisticalGapAnalysis(DocumentElement row)
     {
         if (row.Words == null || row.Words.Count <= 1)
@@ -958,32 +1045,119 @@ internal static class TableProcessor
         if (sortedWords.Count == 1)
             return [sortedWords[0].Text ?? ""];
         
-        // CLAUDE.md準拠：座標ベースギャップ計算
-        var gaps = new List<(double Gap, int Index)>();
-        var avgCharWidth = CalculateAverageCharacterWidth(sortedWords);
+        // CLAUDE.md準拠：新アプローチ - 物理的配置パターン分析
+        var cells = AnalyzePhysicalWordLayout(sortedWords);
         
+        return cells.Count > 0 ? cells : [string.Join(" ", sortedWords.Select(w => w.Text))];
+    }
+    
+    // CLAUDE.md準拠：物理的単語配置パターンの統計分析
+    private static List<string> AnalyzePhysicalWordLayout(List<Word> sortedWords)
+    {
+        // フェーズ1：基本座標統計の計算
+        var wordPositions = sortedWords.Select(w => w.BoundingBox.Left).ToList();
+        var wordWidths = sortedWords.Select(w => w.BoundingBox.Width).ToList();
+        var avgWordWidth = wordWidths.Average();
+        
+        // フェーズ2：単語間距離の統計分析
+        var interWordDistances = new List<double>();
         for (int i = 0; i < sortedWords.Count - 1; i++)
         {
-            var currentWord = sortedWords[i];
-            var nextWord = sortedWords[i + 1];
-            var gap = nextWord.BoundingBox.Left - currentWord.BoundingBox.Right;
-            gaps.Add((gap, i));
+            var distance = sortedWords[i + 1].BoundingBox.Left - sortedWords[i].BoundingBox.Right;
+            interWordDistances.Add(Math.Max(0, distance));
         }
         
-        if (gaps.Count == 0)
+        if (interWordDistances.Count == 0) 
             return [string.Join(" ", sortedWords.Select(w => w.Text))];
         
-        // CLAUDE.md準拠：統計的有意ギャップ検出
-        var significantGaps = DetectStatisticallySignificantGaps(gaps, avgCharWidth);
+        // フェーズ3：距離分布の四分位分析
+        var sortedDistances = interWordDistances.OrderBy(d => d).ToList();
+        var median = GetMedian(sortedDistances);
+        var q75 = GetPercentile(sortedDistances, 0.75);
+        var q90 = GetPercentile(sortedDistances, 0.90);
         
-        // CLAUDE.md準拠：過分割の統計的フィルタリング
-        if (significantGaps.Count > 3)
+        // フェーズ4：列境界の判定閾値計算
+        var baseThreshold = Math.Max(avgWordWidth * 0.3, median * 1.5);
+        var strongThreshold = Math.Max(q75, avgWordWidth * 0.8);
+        
+        // フェーズ5：境界候補の抽出
+        var boundaries = new List<int>();
+        for (int i = 0; i < interWordDistances.Count; i++)
         {
-            significantGaps = FilterExcessiveSegmentation(significantGaps);
+            var distance = interWordDistances[i];
+            
+            // 強い境界指標
+            if (distance >= strongThreshold)
+            {
+                boundaries.Add(i);
+            }
+            // 中程度の境界指標（追加条件付き）
+            else if (distance >= baseThreshold && distance >= q75)
+            {
+                boundaries.Add(i);
+            }
         }
         
-        // セル構築
-        return BuildCellsFromSignificantGaps(sortedWords, significantGaps);
+        // フェーズ6：境界数の最適化
+        if (boundaries.Count > 5)
+        {
+            // 最も大きい距離の上位5つのみ保持
+            var boundaryDistances = boundaries.Select(i => new { Index = i, Distance = interWordDistances[i] })
+                                            .OrderByDescending(x => x.Distance)
+                                            .Take(5)
+                                            .OrderBy(x => x.Index)
+                                            .Select(x => x.Index)
+                                            .ToList();
+            boundaries = boundaryDistances;
+        }
+        
+        // フェーズ7：セル構築
+        var cells = new List<string>();
+        var startIndex = 0;
+        
+        foreach (var boundaryIndex in boundaries)
+        {
+            var cellWords = sortedWords.Skip(startIndex).Take(boundaryIndex - startIndex + 1).ToList();
+            if (cellWords.Any())
+            {
+                var cellText = string.Join(" ", cellWords.Select(w => w.Text?.Trim()).Where(t => !string.IsNullOrEmpty(t)));
+                if (!string.IsNullOrWhiteSpace(cellText))
+                {
+                    cells.Add(cellText);
+                }
+            }
+            startIndex = boundaryIndex + 1;
+        }
+        
+        // 残りの単語
+        if (startIndex < sortedWords.Count)
+        {
+            var remainingWords = sortedWords.Skip(startIndex).ToList();
+            var cellText = string.Join(" ", remainingWords.Select(w => w.Text?.Trim()).Where(t => !string.IsNullOrEmpty(t)));
+            if (!string.IsNullOrWhiteSpace(cellText))
+            {
+                cells.Add(cellText);
+            }
+        }
+        
+        return cells;
+    }
+    
+    // 統計計算ヘルパー関数
+    private static double GetMedian(List<double> sortedValues)
+    {
+        if (sortedValues.Count == 0) return 0;
+        int mid = sortedValues.Count / 2;
+        return sortedValues.Count % 2 == 0 
+            ? (sortedValues[mid - 1] + sortedValues[mid]) / 2.0 
+            : sortedValues[mid];
+    }
+    
+    private static double GetPercentile(List<double> sortedValues, double percentile)
+    {
+        if (sortedValues.Count == 0) return 0;
+        int index = (int)(sortedValues.Count * percentile);
+        return sortedValues[Math.Min(index, sortedValues.Count - 1)];
     }
     
     // CLAUDE.md準拠：統計的文字幅計算
@@ -1011,16 +1185,17 @@ internal static class TableProcessor
         var significantGaps = new List<(double Gap, int Index)>();
         
         // 統計的閾値計算
-        var gapValues = gaps.Select(g => g.Gap).ToList();
+        var gapValues = gaps.Select(g => g.Gap).Where(g => g > 0).ToList();
+        if (!gapValues.Any()) return significantGaps;
+        
         var mean = gapValues.Average();
         var variance = gapValues.Sum(g => Math.Pow(g - mean, 2)) / gapValues.Count;
         var stdDev = Math.Sqrt(variance);
         
-        // CLAUDE.md準拠：適応的統計閾値
-        var adaptiveThreshold = Math.Max(
-            avgCharWidth * 1.5,      // 文字幅ベース
-            mean + stdDev * 0.8      // 統計的外れ値
-        );
+        // CLAUDE.md準拠：より保守的な閾値（必要な境界を保持）
+        var baseThreshold = avgCharWidth * 1.4;  // 1.2から1.4に調整  // 文字幅ベース閾値を下げる
+        var statisticalThreshold = mean + stdDev * 0.7;  // 0.5から0.7に調整  // 統計閾値も下げる
+        var adaptiveThreshold = Math.Min(baseThreshold, statisticalThreshold);
         
         foreach (var gap in gaps)
         {
@@ -1037,51 +1212,13 @@ internal static class TableProcessor
     private static List<(double Gap, int Index)> FilterExcessiveSegmentation(
         List<(double Gap, int Index)> significantGaps)
     {
-        // 上位50%のギャップのみ保持（最も有意な境界）
+        // より多くの境界を保持（上位70%）
         var sortedGaps = significantGaps.OrderByDescending(g => g.Gap).ToList();
-        var keepCount = Math.Max(1, sortedGaps.Count / 2);
+        var keepCount = Math.Max(1, (int)(sortedGaps.Count * 0.7));
         
         return sortedGaps.Take(keepCount).OrderBy(g => g.Index).ToList();
     }
     
-    // CLAUDE.md準拠：ギャップからのセル構築
-    private static List<string> BuildCellsFromSignificantGaps(
-        List<Word> sortedWords, 
-        List<(double Gap, int Index)> significantGaps)
-    {
-        var cells = new List<string>();
-        var startIndex = 0;
-        
-        foreach (var (_, index) in significantGaps.OrderBy(g => g.Index))
-        {
-            var cellWords = sortedWords.Skip(startIndex).Take(index - startIndex + 1).ToList();
-            if (cellWords.Any())
-            {
-                var cellText = string.Join(" ", cellWords.Select(w => w.Text)).Trim();
-                if (!string.IsNullOrWhiteSpace(cellText))
-                {
-                    cells.Add(cellText);
-                }
-            }
-            startIndex = index + 1;
-        }
-        
-        // 残りの単語
-        if (startIndex < sortedWords.Count)
-        {
-            var remainingWords = sortedWords.Skip(startIndex).ToList();
-            if (remainingWords.Any())
-            {
-                var cellText = string.Join(" ", remainingWords.Select(w => w.Text)).Trim();
-                if (!string.IsNullOrWhiteSpace(cellText))
-                {
-                    cells.Add(cellText);
-                }
-            }
-        }
-        
-        return cells.Count > 0 ? cells : [string.Join(" ", sortedWords.Select(w => w.Text))];
-    }
     
     // CLAUDE.md準拠：統計的分析による最適列数決定
     private static int DetermineOptimalColumnCount(List<List<string>> allCells)
@@ -1159,6 +1296,614 @@ internal static class TableProcessor
         }
         
         return result;
+    }
+    
+    // CLAUDE.md準拠：ほぼ空の列を除去（90%以上が空）
+    private static List<List<string>> RemoveMostlyEmptyColumns(List<List<string>> allCells)
+    {
+        if (allCells.Count == 0) return allCells;
+        
+        var maxColumns = allCells.Max(row => row.Count);
+        var columnsToKeep = new List<bool>();
+        
+        // 各列の内容密度を分析
+        for (int col = 0; col < maxColumns; col++)
+        {
+            int nonEmptyCount = 0;
+            int totalCount = 0;
+            
+            foreach (var row in allCells)
+            {
+                if (col < row.Count)
+                {
+                    totalCount++;
+                    if (!string.IsNullOrWhiteSpace(row[col]))
+                    {
+                        nonEmptyCount++;
+                    }
+                }
+            }
+            
+            // バランスの取れた空列除去：10%以上の内容がある列を保持
+            double contentRatio = totalCount > 0 ? (double)nonEmptyCount / totalCount : 0;
+            
+            // 特別条件：完全に空または単一文字のみの列を除外
+            bool hasOnlyMinimalContent = true;
+            bool hasAnyMeaningfulContent = false;
+            
+            foreach (var row in allCells)
+            {
+                if (col < row.Count && !string.IsNullOrWhiteSpace(row[col]))
+                {
+                    var content = row[col].Trim();
+                    if (content.Length > 0) // 何らかの内容があるか
+                    {
+                        hasAnyMeaningfulContent = true;
+                        if (content.Length > 1) // 2文字以上の内容があるか
+                        {
+                            hasOnlyMinimalContent = false;
+                        }
+                    }
+                }
+            }
+            
+            // 改良された列保持判定：より精密な空列除去
+            bool shouldKeep = false;
+            
+            if (contentRatio == 0)
+            {
+                // 完全に空の列は除外
+                shouldKeep = false;
+            }
+            else if (hasOnlyMinimalContent && contentRatio < 0.1)
+            {
+                // 単一文字のみで内容率が低い列は除外
+                shouldKeep = false;
+            }
+            else if (contentRatio >= 0.15 || (contentRatio >= 0.08 && hasAnyMeaningfulContent))
+            {
+                // 15%以上の内容があるか、8%以上で意味のある内容がある列を保持
+                shouldKeep = true;
+            }
+            else
+            {
+                shouldKeep = false;
+            }
+            
+            columnsToKeep.Add(shouldKeep);
+        }
+        
+        // 内容密度の高い列のみ保持
+        var result = new List<List<string>>();
+        foreach (var row in allCells)
+        {
+            var newRow = new List<string>();
+            for (int col = 0; col < row.Count && col < columnsToKeep.Count; col++)
+            {
+                if (columnsToKeep[col])
+                {
+                    newRow.Add(row[col]);
+                }
+            }
+            if (newRow.Count > 0)
+            {
+                result.Add(newRow);
+            }
+        }
+        
+        return result;
+    }
+    
+    // CLAUDE.md準拠：列配置統一性に基づく座標ベース境界検出
+    private static List<ColumnBoundary> CalculateColumnBoundariesByAlignment(List<DocumentElement> tableRows)
+    {
+        if (tableRows.Count < 2) return new List<ColumnBoundary>();
+        
+        var allWords = tableRows.SelectMany(r => r.Words ?? new List<Word>())
+                               .Where(w => !string.IsNullOrEmpty(w.Text?.Trim()))
+                               .ToList();
+        
+        if (allWords.Count < 3) return new List<ColumnBoundary>();
+        
+        // 各行の単語を左端座標でグループ化
+        var rowWordGroups = new List<List<Word>>();
+        foreach (var row in tableRows)
+        {
+            if (row.Words != null && row.Words.Count > 0)
+            {
+                var sortedWords = row.Words.Where(w => !string.IsNullOrEmpty(w.Text?.Trim()))
+                                          .OrderBy(w => w.BoundingBox.Left)
+                                          .ToList();
+                if (sortedWords.Count > 0)
+                {
+                    rowWordGroups.Add(sortedWords);
+                }
+            }
+        }
+        
+        if (rowWordGroups.Count < 2) return new List<ColumnBoundary>();
+        
+        // 列配置パターン分析：各行の左端位置のクラスタリング
+        var leftPositions = new List<List<double>>();
+        
+        foreach (var rowWords in rowWordGroups)
+        {
+            var positions = rowWords.Select(w => w.BoundingBox.Left).ToList();
+            leftPositions.Add(positions);
+        }
+        
+        // 共通の左端位置を統計的に特定（列配置の統一性を利用）
+        var commonLeftPositions = FindCommonLeftPositions(leftPositions);
+        
+        if (commonLeftPositions.Count < 2) return new List<ColumnBoundary>();
+        
+        // 共通位置から列境界を構築
+        return BuildColumnBoundariesFromPositions(commonLeftPositions, allWords);
+    }
+    
+    // CLAUDE.md準拠：共通の左端位置を統計的に特定
+    private static List<double> FindCommonLeftPositions(List<List<double>> leftPositions)
+    {
+        if (leftPositions.Count == 0) return new List<double>();
+        
+        // 全ての位置を統合してクラスタリング
+        var allPositions = leftPositions.SelectMany(positions => positions)
+                                       .OrderBy(pos => pos)
+                                       .ToList();
+        
+        if (allPositions.Count == 0) return new List<double>();
+        
+        // クラスタリング闾値：平均文字幅の1.0倍（より細かく）
+        var avgCharWidth = CalculateAverageCharWidth(allPositions);
+        var clusterThreshold = avgCharWidth * 1.0;
+        
+        // 位置クラスタリング
+        var clusters = new List<List<double>>();
+        var currentCluster = new List<double> { allPositions[0] };
+        
+        for (int i = 1; i < allPositions.Count; i++)
+        {
+            if (allPositions[i] - allPositions[i - 1] <= clusterThreshold)
+            {
+                currentCluster.Add(allPositions[i]);
+            }
+            else
+            {
+                clusters.Add(currentCluster);
+                currentCluster = new List<double> { allPositions[i] };
+            }
+        }
+        clusters.Add(currentCluster);
+        
+        // 各クラスターの中央値を計算し、統一性を評価
+        var commonPositions = new List<double>();
+        int totalRows = leftPositions.Count;
+        
+        foreach (var cluster in clusters)
+        {
+            // この位置が何行に現れるかをカウント
+            int appearanceCount = 0;
+            double clusterCenter = cluster.Average();
+            
+            foreach (var rowPositions in leftPositions)
+            {
+                bool appearsInRow = rowPositions.Any(pos => Math.Abs(pos - clusterCenter) <= clusterThreshold);
+                if (appearsInRow) appearanceCount++;
+            }
+            
+            // 40%以上の行に現れる位置を共通位置として採用（より柔軟に）
+            if ((double)appearanceCount / totalRows >= 0.4)
+            {
+                commonPositions.Add(clusterCenter);
+            }
+        }
+        
+        return commonPositions.OrderBy(pos => pos).ToList();
+    }
+    
+    // CLAUDE.md準拠：行間一貫性に基づく列境界検出
+    private static List<ColumnBoundary> CalculateConsistentColumnBoundaries(List<DocumentElement> tableRows)
+    {
+        if (tableRows.Count < 2) return new List<ColumnBoundary>();
+        
+        // 各行で有意なギャップ位置を検出
+        var allRowGaps = new List<List<double>>();
+        
+        foreach (var row in tableRows)
+        {
+            if (row.Words == null || row.Words.Count < 2) continue;
+            
+            var sortedWords = row.Words.OrderBy(w => w.BoundingBox.Left).ToList();
+            var rowGaps = new List<double>();
+            var avgCharWidth = CalculateAverageCharacterWidth(sortedWords);
+            
+            for (int i = 0; i < sortedWords.Count - 1; i++)
+            {
+                var gap = sortedWords[i + 1].BoundingBox.Left - sortedWords[i].BoundingBox.Right;
+                
+                // CLAUDE.md準拠：行内で有意なギャップのみを記録（厳格化）
+                if (gap >= avgCharWidth * 1.5) // 文字幅の1.5倍以上を列境界候補とする（精度重視）
+                {
+                    var gapCenter = sortedWords[i].BoundingBox.Right + (gap / 2.0);
+                    rowGaps.Add(gapCenter);
+                }
+            }
+            
+            if (rowGaps.Count > 0)
+            {
+                allRowGaps.Add(rowGaps);
+            }
+        }
+        
+        if (allRowGaps.Count < 2) return new List<ColumnBoundary>();
+        
+        // CLAUDE.md準拠：行間で一貫して現れるギャップ位置を特定
+        var consistentGaps = FindConsistentGapPositions(allRowGaps);
+        
+        if (consistentGaps.Count == 0) return new List<ColumnBoundary>();
+        
+        // 境界を構築
+        var allWords = tableRows.SelectMany(r => r.Words ?? new List<Word>()).ToList();
+        if (!allWords.Any()) return new List<ColumnBoundary>();
+        
+        var startX = allWords.Min(w => w.BoundingBox.Left);
+        var endX = allWords.Max(w => w.BoundingBox.Right);
+        var boundaries = new List<ColumnBoundary>();
+        var currentLeft = startX;
+        
+        foreach (var gapPosition in consistentGaps.OrderBy(g => g))
+        {
+            boundaries.Add(new ColumnBoundary
+            {
+                Left = currentLeft,
+                Right = gapPosition
+            });
+            currentLeft = gapPosition;
+        }
+        
+        // 最後の列
+        boundaries.Add(new ColumnBoundary
+        {
+            Left = currentLeft,
+            Right = endX
+        });
+        
+        return boundaries;
+    }
+    
+    // CLAUDE.md準拠：行間一貫性のあるギャップ位置の特定
+    private static List<double> FindConsistentGapPositions(List<List<double>> allRowGaps)
+    {
+        if (allRowGaps.Count == 0) return new List<double>();
+        
+        var consistentGaps = new List<double>();
+        var allGaps = allRowGaps.SelectMany(gaps => gaps).OrderBy(g => g).ToList();
+        
+        if (allGaps.Count == 0) return consistentGaps;
+        
+        // 動的クラスタリング闾値
+        var avgGapDistance = 0.0;
+        if (allGaps.Count > 1)
+        {
+            var distances = new List<double>();
+            for (int i = 1; i < allGaps.Count; i++)
+            {
+                distances.Add(allGaps[i] - allGaps[i - 1]);
+            }
+            avgGapDistance = distances.Average();
+        }
+        var clusterThreshold = Math.Max(avgGapDistance * 0.5, 10.0); // 動的または最低10ポイント
+        
+        // ギャップ位置のクラスタリング
+        var clusters = new List<List<double>>();
+        var currentCluster = new List<double> { allGaps[0] };
+        
+        for (int i = 1; i < allGaps.Count; i++)
+        {
+            if (allGaps[i] - allGaps[i - 1] <= clusterThreshold)
+            {
+                currentCluster.Add(allGaps[i]);
+            }
+            else
+            {
+                clusters.Add(currentCluster);
+                currentCluster = new List<double> { allGaps[i] };
+            }
+        }
+        clusters.Add(currentCluster);
+        
+        // 複数行で一貫して現れるクラスターのみを採用
+        int totalRows = allRowGaps.Count;
+        int minRequiredRows = Math.Max(2, (int)(totalRows * 0.5)); // 50%以上の行に現れる（柔軟化）
+        
+        foreach (var cluster in clusters)
+        {
+            var clusterCenter = cluster.Average();
+            int appearanceCount = 0;
+            
+            foreach (var rowGaps in allRowGaps)
+            {
+                bool appearsInRow = rowGaps.Any(gap => Math.Abs(gap - clusterCenter) <= clusterThreshold);
+                if (appearsInRow) appearanceCount++;
+            }
+            
+            if (appearanceCount >= minRequiredRows)
+            {
+                consistentGaps.Add(clusterCenter);
+            }
+        }
+        
+        return consistentGaps.OrderBy(g => g).ToList();
+    }
+    
+    // CLAUDE.md準拠：文字幅の統計的計算
+    private static double CalculateAverageCharWidth(List<double> positions)
+    {
+        if (positions.Count < 2) return 10.0; // デフォルト値
+        
+        var gaps = new List<double>();
+        for (int i = 1; i < positions.Count; i++)
+        {
+            gaps.Add(positions[i] - positions[i - 1]);
+        }
+        
+        if (gaps.Count == 0) return 10.0;
+        
+        // 異常値を除外した平均値
+        gaps.Sort();
+        var median = gaps[gaps.Count / 2];
+        var filteredGaps = gaps.Where(g => g <= median * 3).ToList();
+        
+        return filteredGaps.Count > 0 ? filteredGaps.Average() / 3.0 : 10.0;
+    }
+    
+    // CLAUDE.md準拠：垂直共通空白領域の検出
+    private static List<(double Left, double Right)> FindVerticalCommonGaps(List<DocumentElement> tableRows)
+    {
+        if (tableRows.Count < 2) return new List<(double, double)>();
+        
+        // 各行における空白領域を特定
+        var rowGaps = new List<List<(double Left, double Right)>>();
+        
+        foreach (var row in tableRows)
+        {
+            if (row.Words == null || row.Words.Count == 0) continue;
+            
+            var sortedWords = row.Words.OrderBy(w => w.BoundingBox.Left).ToList();
+            var gaps = new List<(double Left, double Right)>();
+            
+            // 行内の単語間空白を計算（最小閾値を下げる）
+            for (int i = 0; i < sortedWords.Count - 1; i++)
+            {
+                var gapLeft = sortedWords[i].BoundingBox.Right;
+                var gapRight = sortedWords[i + 1].BoundingBox.Left;
+                var gapWidth = gapRight - gapLeft;
+                
+                // より小さなギャップも考慮（5ポイント以上）
+                if (gapWidth >= 5.0)
+                {
+                    gaps.Add((gapLeft, gapRight));
+                }
+            }
+            
+            if (gaps.Count > 0)
+            {
+                rowGaps.Add(gaps);
+            }
+        }
+        
+        if (rowGaps.Count < 2) return new List<(double, double)>();
+        
+        // 共通する垂直空白領域を特定
+        var commonGaps = new List<(double Left, double Right)>();
+        
+        // 最初の行の空白を基準として、他の行にも共通して存在するかチェック
+        foreach (var referenceGap in rowGaps[0])
+        {
+            int commonCount = 1; // 基準行を含む
+            var overlappingGaps = new List<(double Left, double Right)> { referenceGap };
+            
+            foreach (var otherRowGaps in rowGaps.Skip(1))
+            {
+                var overlapping = FindOverlappingGap(referenceGap, otherRowGaps);
+                if (overlapping.HasValue)
+                {
+                    commonCount++;
+                    overlappingGaps.Add(overlapping.Value);
+                }
+            }
+            
+            // 30%以上の行に共通する空白領域を採用（より柔軟に）
+            if ((double)commonCount / rowGaps.Count >= 0.3)
+            {
+                // 重複する領域の共通部分を計算
+                var commonLeft = overlappingGaps.Max(g => g.Left);
+                var commonRight = overlappingGaps.Min(g => g.Right);
+                
+                if (commonRight > commonLeft)
+                {
+                    commonGaps.Add((commonLeft, commonRight));
+                }
+            }
+        }
+        
+        // 重複する領域をマージ
+        return MergeOverlappingGaps(commonGaps);
+    }
+    
+    // CLAUDE.md準拠：空白領域の重複検出
+    private static (double Left, double Right)? FindOverlappingGap(
+        (double Left, double Right) referenceGap, 
+        List<(double Left, double Right)> candidateGaps)
+    {
+        foreach (var candidate in candidateGaps)
+        {
+            // 重複判定：一部でも重複していれば考慮
+            var overlapLeft = Math.Max(referenceGap.Left, candidate.Left);
+            var overlapRight = Math.Min(referenceGap.Right, candidate.Right);
+            
+            if (overlapRight > overlapLeft)
+            {
+                // 重複面積が各領域の50%以上であれば同じ空白領域とみなす
+                var overlapWidth = overlapRight - overlapLeft;
+                var refWidth = referenceGap.Right - referenceGap.Left;
+                var candWidth = candidate.Right - candidate.Left;
+                
+                if (overlapWidth >= refWidth * 0.3 || overlapWidth >= candWidth * 0.3)
+                {
+                    return candidate;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    // CLAUDE.md準拠：重複する空白領域のマージ
+    private static List<(double Left, double Right)> MergeOverlappingGaps(List<(double Left, double Right)> gaps)
+    {
+        if (gaps.Count <= 1) return gaps;
+        
+        var sorted = gaps.OrderBy(g => g.Left).ToList();
+        var merged = new List<(double Left, double Right)>();
+        var current = sorted[0];
+        
+        for (int i = 1; i < sorted.Count; i++)
+        {
+            var next = sorted[i];
+            
+            // 重複または隣接している場合はマージ
+            if (next.Left <= current.Right + 5) // 5ポイントの許容誤差
+            {
+                current = (current.Left, Math.Max(current.Right, next.Right));
+            }
+            else
+            {
+                merged.Add(current);
+                current = next;
+            }
+        }
+        
+        merged.Add(current);
+        return merged;
+    }
+    
+    // CLAUDE.md準拠：垂直空白領域から列境界を構築
+    private static List<ColumnBoundary> BuildBoundariesFromVerticalGaps(
+        List<(double Left, double Right)> verticalGaps, 
+        List<DocumentElement> tableRows)
+    {
+        var allWords = tableRows.SelectMany(r => r.Words ?? new List<Word>()).ToList();
+        if (!allWords.Any()) return new List<ColumnBoundary>();
+        
+        var minX = allWords.Min(w => w.BoundingBox.Left);
+        var maxX = allWords.Max(w => w.BoundingBox.Right);
+        var boundaries = new List<ColumnBoundary>();
+        
+        // 空白領域の中央を境界として使用
+        var gapCenters = verticalGaps.Select(g => (g.Left + g.Right) / 2.0)
+                                   .OrderBy(x => x)
+                                   .ToList();
+        
+        var currentLeft = minX;
+        
+        foreach (var gapCenter in gapCenters)
+        {
+            boundaries.Add(new ColumnBoundary
+            {
+                Left = currentLeft,
+                Right = gapCenter
+            });
+            currentLeft = gapCenter;
+        }
+        
+        // 最後の列
+        boundaries.Add(new ColumnBoundary
+        {
+            Left = currentLeft,
+            Right = maxX
+        });
+        
+        return boundaries;
+    }
+    
+    // CLAUDE.md準拠：共通位置から列境界を構築
+    private static List<ColumnBoundary> BuildColumnBoundariesFromPositions(List<double> positions, List<Word> allWords)
+    {
+        if (positions.Count < 2) return new List<ColumnBoundary>();
+        
+        var boundaries = new List<ColumnBoundary>();
+        var minX = allWords.Min(w => w.BoundingBox.Left);
+        var maxX = allWords.Max(w => w.BoundingBox.Right);
+        
+        for (int i = 0; i < positions.Count; i++)
+        {
+            double left = i == 0 ? minX : (positions[i - 1] + positions[i]) / 2;
+            double right = i == positions.Count - 1 ? maxX : (positions[i] + positions[i + 1]) / 2;
+            
+            boundaries.Add(new ColumnBoundary
+            {
+                Left = left,
+                Right = right
+            });
+        }
+        
+        return boundaries;
+    }
+    
+    // CLAUDE.md準拠：テーブル処理後の後続段落統合（分離セル内容対応）
+    private static void IntegrateSubsequentParagraphs(List<DocumentElement> tableRows, List<DocumentElement> allElements, int tableStartIndex)
+    {
+        if (tableRows.Count == 0) return;
+        
+        var lastTableRow = tableRows.Last();
+        
+        // テーブル処理範囲の終了位置を特定
+        int searchStartIndex = tableStartIndex + tableRows.Count;
+        
+        // 後続の段落を検索して統合判定
+        for (int i = searchStartIndex; i < allElements.Count && i < searchStartIndex + 5; i++) // 最大5要素先まで検索
+        {
+            var element = allElements[i];
+            
+            // 空要素はスキップ
+            if (element.Type == ElementType.Empty) continue;
+            
+            // 段落の場合は統合判定
+            if (element.Type == ElementType.Paragraph && element.Content.Trim().Length <= 50)
+            {
+                // CLAUDE.md準拠：座標ベース統合判定
+                if (ShouldIntegrateIntoPreviousTableRowByCoordinates(element, lastTableRow))
+                {
+                    // 統合実行
+                    if (element.Words != null && element.Words.Count > 0 && 
+                        lastTableRow.Words != null && lastTableRow.Words.Count > 0)
+                    {
+                        var combinedWords = new List<Word>(lastTableRow.Words);
+                        combinedWords.AddRange(element.Words);
+                        lastTableRow.Words = combinedWords;
+                    }
+                    
+                    lastTableRow.Content = lastTableRow.Content + " " + element.Content.Trim();
+                    
+                    // 統合した要素を削除
+                    element.Content = ""; // 空にして後続処理で無視されるようにする
+                    element.Type = ElementType.Empty;
+                }
+                else
+                {
+                    break; // 統合できない段落が見つかったら終了
+                }
+            }
+            else if (element.Type == ElementType.Header)
+            {
+                break; // ヘッダーが見つかったら終了
+            }
+            else
+            {
+                break; // テーブル以外の要素が見つかったら終了
+            }
+        }
     }
 }
 
