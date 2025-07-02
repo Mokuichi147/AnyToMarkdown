@@ -173,18 +173,13 @@ internal static class PostProcessor
                 // 列の分布を分析
                 var columnCount = AnalyzeColumnStructure(element);
                 
-                // より積極的な検出：2列以上、短いテキスト、または数字を含む場合
-                bool isTableCandidate = columnCount >= 2 || 
-                                       HasMultipleShortTexts(element) ||
-                                       LooksLikeTableRow(element);
+                // CLAUDE.md準拠：純粋な座標・統計分析による判定
+                // 複数列の分布が検出され、前後の要素との整合性がある場合のみ
+                bool isTableCandidate = columnCount >= 2;
                 
-                if (isTableCandidate)
+                if (isTableCandidate && IsPartOfTablePattern(result, i))
                 {
-                    // 前後の要素チェックをより緩和
-                    if (IsPartOfTablePattern(result, i) || IsIsolatedTableRow(element))
-                    {
-                        element.Type = ElementType.TableRow;
-                    }
+                    element.Type = ElementType.TableRow;
                 }
             }
         }
