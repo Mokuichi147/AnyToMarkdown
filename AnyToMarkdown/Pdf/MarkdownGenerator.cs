@@ -33,7 +33,7 @@ internal static class MarkdownGenerator
                 {
                     var nextElement = consolidatedElements[i + 1];
                     
-                    // ヘッダーの後に空行を追加
+                    // ヘッダーの後に空行を追加（すべてのヘッダー後、特にテーブル前も確実に）
                     if (element.Type == ElementType.Header)
                     {
                         sb.AppendLine();
