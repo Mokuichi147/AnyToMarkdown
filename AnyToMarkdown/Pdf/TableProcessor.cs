@@ -706,65 +706,18 @@ internal static class TableProcessor
                 for (int i = 0; i < sortedWords.Count - 1; i++)
                 {
                     var gap = sortedWords[i + 1].BoundingBox.Left - sortedWords[i].BoundingBox.Right;
-                    var charWidth = avgWordWidth / Math.Max(1, sortedWords[i].Text.Length);
                     
-                    // CLAUDE.md準拠：統計的閾値による境界検出
+                    // CLAUDE.md準拠：シンプルな統計的閾値による境界検出
                     bool isSignificantGap = false;
                     
-                    // 統計的分析：行内の全ギャップと比較
-                    var wordGaps = new List<double>();
-                    for (int j = 0; j < sortedWords.Count - 1; j++)
-                    {
-                        var g = sortedWords[j + 1].BoundingBox.Left - sortedWords[j].BoundingBox.Right;
-                        if (g > 0) wordGaps.Add(g);
-                    }
+                    // 基本的な文字幅ベース判定
+                    var charWidth = avgWordWidth / Math.Max(1, sortedWords[i].Text.Length);
+                    var normalizedGap = gap / Math.Max(charWidth, 1.0);
                     
-                    if (wordGaps.Count > 0)
+                    // シンプルな閾値判定
+                    if (normalizedGap >= 1.5 || gap >= avgWordWidth * 0.5)
                     {
-                        var sortedWordGaps = wordGaps.OrderBy(g => g).ToList();
-                        var medianIndex = sortedWordGaps.Count / 2;
-                        var median = sortedWordGaps[medianIndex];
-                        
-                        // CLAUDE.md準拠：統計的分散分析による境界検出（セル内容混合解決）
-                        // 四分位数に基づく統計的閾値：より精密な境界検出
-                        var q75Index = Math.Min(wordGaps.Count - 1, (int)(wordGaps.Count * 0.75));
-                        var q75 = sortedWordGaps[q75Index];
-                        var q25Index = (int)(wordGaps.Count * 0.25);
-                        var q25 = sortedWordGaps[q25Index];
-                        var iqr = q75 - q25;
-                        
-                        // CLAUDE.md準拠：バランスの取れた境界検出改善
-                        // 目標：語句間自然区切りを除外しつつ、必要な列境界を保持
-                        // 方法：統計的分析と座標ベース解析の両立
-                        
-                        // CLAUDE.md準拠：段階的境界検出で精度とリコールのバランスを取る
-                        // フェーズ1：明らかな列境界を識別
-                        // フェーズ2：語句間区切りをフィルタリング
-                        
-                        // CLAUDE.md準拠：バランスの取れた統計的境界検出
-                        // 問題：過度に保守的で意味のある列境界を統合してしまう
-                        // 解決：統計分析と座標ベース分析のバランス改善
-                        
-                        // 改善1：適応的統計閾値（精度とリコールのバランス）
-                        var moderateThreshold = q25 + (iqr * 0.4); // Q1から40%（適度に緩和）
-                        var isModerateOutlier = gap >= moderateThreshold;
-                        
-                        // 改善2：多段階文字幅判定（柔軟性向上）
-                        var localCharWidth = avgWordWidth / Math.Max(sortedWords[i].Text.Length, 1);
-                        var normalizedGap = gap / Math.Max(localCharWidth, 5.0);
-                        var isRelativelySignificant = normalizedGap >= 1.2; // 文字幅の1.2倍以上（緩和）
-                        var isStronglySignificant = normalizedGap >= 2.5; // 強い境界指標
-                        
-                        // 改善3：段階的境界判定（柔軟性確保）
-                        var isLargerThanMedian = gap > median * 1.2; // 中央値の120%以上（緩和）
-                        var isAbsolutelySignificant = gap >= avgWordWidth * 0.6; // 語幅の60%以上（緩和）
-                        var isVerySignificant = gap >= avgWordWidth * 1.2; // 非常に大きなギャップ
-                        
-                        // CLAUDE.md準拠：多段階境界検出（精度とリコールのバランス）
-                        if (isStronglySignificant || isVerySignificant || 
-                            (isModerateOutlier && isLargerThanMedian) || 
-                            (isRelativelySignificant && isAbsolutelySignificant))
-                            isSignificantGap = true;
+                        isSignificantGap = true;
                     }
                     
                     if (isSignificantGap)
@@ -1076,40 +1029,15 @@ internal static class TableProcessor
         var q75 = GetPercentile(sortedDistances, 0.75);
         var q90 = GetPercentile(sortedDistances, 0.90);
         
-        // フェーズ4：CLAUDE.md準拠の純粋な統計的閾値計算（精密化）
-        // バランスを重視した境界検出：必要な境界を検出しつつ過分割を防ぐ
-        var baseThreshold = Math.Max(median * 1.1, q75 * 0.8); // 基本閾値
-        var minThreshold = avgWordWidth * 0.2; // 最小閾値は文字幅の20%
-        var threshold = Math.Max(minThreshold, baseThreshold);
+        // フェーズ4：CLAUDE.md準拠の純粋な統計的閾値計算
+        var threshold = Math.Max(avgWordWidth * 0.3, median * 1.2);
         
-        // フェーズ5：多段階境界候補抽出（統計分析強化）
+        // フェーズ5：シンプルな境界候補抽出
         var boundaries = new List<int>();
         for (int i = 0; i < interWordDistances.Count; i++)
         {
             var distance = interWordDistances[i];
-            
-            // 基本統計的境界判定
-            bool isPrimaryBoundary = distance >= threshold;
-            
-            // 補完的境界検出：特に小さいが意味のあるギャップ
-            bool isSecondaryBoundary = false;
-            if (!isPrimaryBoundary && distance > 0)
-            {
-                // 局所的な文字幅分析
-                var currentWordWidth = sortedWords[i].BoundingBox.Width;
-                var nextWordWidth = sortedWords[i + 1].BoundingBox.Width;
-                var localCharWidth = (currentWordWidth + nextWordWidth) / 2.0;
-                var normalizedGap = distance / Math.Max(localCharWidth, 1.0);
-                
-                // 統計的外れ値分析（より精密）
-                var isStatisticalOutlier = distance > q75;
-                var isModerateGap = normalizedGap >= 0.8; // 文字幅の80%以上
-                var isMinimallySignificant = distance >= avgWordWidth * 0.15;
-                
-                isSecondaryBoundary = isStatisticalOutlier && isModerateGap && isMinimallySignificant;
-            }
-            
-            if (isPrimaryBoundary || isSecondaryBoundary)
+            if (distance >= threshold)
             {
                 boundaries.Add(i);
             }
@@ -1696,9 +1624,9 @@ internal static class TableProcessor
                 var gapRight = sortedWords[i + 1].BoundingBox.Left;
                 var gapWidth = gapRight - gapLeft;
                 
-                // CLAUDE.md準拠：バランスを重視した動的ギャップ閾値
+                // CLAUDE.md準拠：標準的なギャップ閾値
                 var avgCharWidthInRow = sortedWords.Average(w => w.BoundingBox.Width / Math.Max(w.Text?.Length ?? 1, 1));
-                var minGapThreshold = Math.Max(1.0, avgCharWidthInRow * 0.15); // 適度な感度で検出
+                var minGapThreshold = Math.Max(2.0, avgCharWidthInRow * 0.3);
                 
                 if (gapWidth >= minGapThreshold)
                 {
@@ -1733,8 +1661,8 @@ internal static class TableProcessor
                 }
             }
             
-            // CLAUDE.md準拠：35%以上の行に共通する空白領域を採用（バランス調整）
-            if ((double)commonCount / rowGaps.Count >= 0.35)
+            // CLAUDE.md準拠：40%以上の行に共通する空白領域を採用
+            if ((double)commonCount / rowGaps.Count >= 0.4)
             {
                 // 重複する領域の共通部分を計算
                 var commonLeft = overlappingGaps.Max(g => g.Left);
