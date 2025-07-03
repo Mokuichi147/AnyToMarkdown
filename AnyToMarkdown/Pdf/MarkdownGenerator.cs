@@ -20,6 +20,12 @@ internal static class MarkdownGenerator
             
             if (!string.IsNullOrWhiteSpace(markdown))
             {
+                // テーブルの場合、前に空行を追加（既存の空行がない場合のみ）
+                if (element.Type == ElementType.TableRow && !IsLastLineEmpty(sb))
+                {
+                    sb.AppendLine();
+                }
+                
                 sb.AppendLine(markdown);
                 
                 // 要素間の適切な間隔を追加
@@ -29,6 +35,11 @@ internal static class MarkdownGenerator
                     
                     // ヘッダーの後に空行を追加
                     if (element.Type == ElementType.Header)
+                    {
+                        sb.AppendLine();
+                    }
+                    // テーブルの後に空行を追加（次の要素がテーブルでない場合）
+                    else if (element.Type == ElementType.TableRow && nextElement.Type != ElementType.TableRow)
                     {
                         sb.AppendLine();
                     }
@@ -191,5 +202,16 @@ internal static class MarkdownGenerator
     private static string ConvertParagraph(DocumentElement element)
     {
         return element.Content?.Trim() ?? "";
+    }
+    
+    private static bool IsLastLineEmpty(StringBuilder sb)
+    {
+        if (sb.Length == 0) return true;
+        
+        var content = sb.ToString();
+        var lines = content.Split('\n');
+        
+        // 最後の行が空行かチェック
+        return lines.Length > 0 && string.IsNullOrWhiteSpace(lines[lines.Length - 1]);
     }
 }

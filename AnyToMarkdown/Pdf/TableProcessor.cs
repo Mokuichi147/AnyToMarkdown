@@ -238,8 +238,7 @@ internal static class TableProcessor
             tableBuilder.AppendLine();
         }
         
-        // テーブル前後に空行を追加
-        return "\n" + tableBuilder.ToString() + "\n";
+        return tableBuilder.ToString();
     }
 
     private static string CleanTableCell(string cellContent)
@@ -353,13 +352,7 @@ internal static class TableProcessor
             result.Append(GenerateMarkdownTable(tableRows));
         }
         
-        var output = result.ToString();
-        // テーブルが含まれている場合、前後に空行を確保
-        if (output.Contains("|"))
-        {
-            return "\n" + output.Trim() + "\n";
-        }
-        return output;
+        return result.ToString();
     }
     
     private static bool ContainsHeaderLikeElement(DocumentElement element)
