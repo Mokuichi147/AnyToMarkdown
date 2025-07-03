@@ -20,10 +20,17 @@ internal static class MarkdownGenerator
             
             if (!string.IsNullOrWhiteSpace(markdown))
             {
-                // テーブルの場合、前に空行を追加（既存の空行がない場合のみ）
-                if (element.Type == ElementType.TableRow && !IsLastLineEmpty(sb))
+                // テーブルの開始前に空行を追加（連続するテーブル行の最初のみ）
+                if (element.Type == ElementType.TableRow)
                 {
-                    sb.AppendLine();
+                    var isPreviousTableRow = i > 0 && consolidatedElements[i - 1].Type == ElementType.TableRow;
+                    var hasContent = sb.Length > 0;
+                    
+                    if (!isPreviousTableRow && hasContent)
+                    {
+                        // 必ず空行を挿入
+                        sb.AppendLine();
+                    }
                 }
                 
                 sb.AppendLine(markdown);
@@ -46,6 +53,16 @@ internal static class MarkdownGenerator
                     // 段落の後に別の段落、テーブル、リストが来る場合も空行を追加
                     else if (element.Type == ElementType.Paragraph && 
                             (nextElement.Type == ElementType.Paragraph || nextElement.Type == ElementType.TableRow || nextElement.Type == ElementType.ListItem))
+                    {
+                        sb.AppendLine();
+                    }
+                    // 他の要素からテーブルへの遷移時に空行を確実に追加
+                    else if (nextElement.Type == ElementType.TableRow && element.Type != ElementType.TableRow && element.Type != ElementType.Header)
+                    {
+                        sb.AppendLine();
+                    }
+                    // リスト項目の後にテーブルが来る場合も空行を追加
+                    else if (element.Type == ElementType.ListItem && nextElement.Type == ElementType.TableRow)
                     {
                         sb.AppendLine();
                     }
