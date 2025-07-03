@@ -50,6 +50,11 @@ internal static class MarkdownGenerator
                         sb.AppendLine();
                     }
                 }
+                // 最後の要素がテーブルの場合も空行を追加
+                else if (element.Type == ElementType.TableRow)
+                {
+                    sb.AppendLine();
+                }
             }
         }
 
