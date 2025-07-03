@@ -1049,9 +1049,11 @@ internal static class PostProcessor
             }
         }
 
-        // CLAUDE.md準拠：単独行のテーブル化を防止
+        // CLAUDE.md準拠：純粋な座標・統計ベースの単独行テーブル化防止
         // 前後にテーブル行がある場合のみテーブルとして認識
-        return hasPreviousTable && hasNextTable;
+        var hasTableStructure = current.Content.Contains("|") || current.Content.Contains("\t");
+        
+        return hasPreviousTable && hasNextTable && hasTableStructure;
     }
 
     private static bool IsElementInTableArea(DocumentElement element, UglyToad.PdfPig.Core.PdfRectangle area)

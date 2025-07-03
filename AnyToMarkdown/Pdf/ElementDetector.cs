@@ -208,19 +208,10 @@ internal static class ElementDetector
         // CLAUDE.md準拠：厳格なテーブル行判定
         // 単一行のタイトルや見出しを除外するため、より厳しい条件を適用
         
-        // CLAUDE.md準拠：より厳格なテーブル行判定（見出し誤判定防止）
-        var wordList = cleanText.Split([' '], StringSplitOptions.RemoveEmptyEntries);
-        if (wordList.Length >= 5) // 5つ以上の単語を要求（より厳格）
-        {
-            var allShort = wordList.All(w => w.Length <= 15); // 文字数制限を厳格化
-            var avgLength = wordList.Average(w => w.Length);
-            var hasNumbers = wordList.Any(w => w.Any(char.IsDigit)); // 数値を含む場合のみ
-            if (allShort && avgLength <= 8 && hasNumbers) // より厳格な条件
-                return true;
-        }
+        // 削除：単語数判断はCLAUDE.md違反
 
-        // CLAUDE.md準拠：座標ベースの厳格なテーブル判定
-        if (words.Count >= 3) // 3つ以上の単語が必要
+        // CLAUDE.md準拠：座標ベースのテーブル判定
+        if (words.Count >= 2) // 最低限の単語数
         {
             var sortedWords = words.OrderBy(w => w.BoundingBox.Left).ToList();
             var gaps = new List<double>();

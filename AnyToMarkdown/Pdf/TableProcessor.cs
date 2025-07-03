@@ -92,8 +92,8 @@ internal static class TableProcessor
             }
         }
         
-        // テーブル行のしきい値を調整（より厳格に）
-        if (consecutiveTableRows.Count >= 1) // 単一行でもテーブルとして処理
+        // CLAUDE.md準拠：最低2行のテーブル行が必要
+        if (consecutiveTableRows.Count >= 2) // 2行以上のテーブル行が必要
         {
             // テーブル処理後の後続段落統合処理
             IntegrateSubsequentParagraphs(consecutiveTableRows, allElements, currentIndex);
